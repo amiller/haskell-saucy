@@ -201,4 +201,4 @@ testExec = runRand $ execUC testEnv (partyWrapper idealProtocol) dummyFunctional
 
 
 
-bidirectional 
+
