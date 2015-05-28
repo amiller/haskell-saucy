@@ -68,24 +68,31 @@ execUC z p f a = do
   a2z <- newChan; z2a <- newChan
   a2p <- newChan; p2a <- newChan
 
-  fork $ f (p2f, f2p) (a2f, f2a)
-  fork $ p (z2p, p2z) (f2p, p2f) (a2p, p2a) 
-  fork $ a (z2a, a2z) (p2a, a2p) (f2a, a2f)
+  fork $ do
+    -- First, wait for the environment to choose an sid
+    sid :: String <- readChan z2a
+
+    fork $ f sid (p2f, f2p) (a2f, f2a)
+    fork $ p sid (z2p, p2z) (f2p, p2f) (a2p, p2a) 
+    fork $ a sid (z2a, a2z) (p2a, a2p) (f2a, a2f)
+
+    writeChan a2z ()
 
   runUntilOutput $ z (p2z, z2p) (a2z, z2a)
 
 -- Implement PIDs
-partyWrapper p (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
+partyWrapper p sid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   -- TODO: handle corruptions
 
-  -- _2pid :: Map (String) (p2a,a2p,z2p,...)
+  -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
+  -- to communicate with that instance of the protocol
   z2pid <- newIORef empty
   f2pid <- newIORef empty
   a2pid <- newIORef empty
 
   -- subroutine to install a new party
   let newPid pid = do
-        liftIO $ putStrLn $ "Creating new party with pid:" ++ pid
+        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new party with pid:" ++ pid
         let newPid' _2pid p2_ tag = do
                      pp2_ <- newChan;
                      _2pp <- newChan;
@@ -98,9 +105,11 @@ partyWrapper p (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
         z <- newPid' z2pid p2z "p2z"
         f <- newPid' f2pid p2f "p2f"
         a <- newPid' a2pid p2a "p2a"
-        fork $ p pid z f a
+        fork $ p pid sid z f a
         return ()
 
+  -- Retrieve the {z2p,f2p,a2p} channel by PID (or install a new party if this is 
+  -- the first such message)
   let getPid _2pid pid = do
         b <- return . member pid =<< readIORef _2pid
         if not b then newPid pid else return ()
@@ -124,7 +133,7 @@ partyWrapper p (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   return ()
 
 
-idealProtocol pid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
+idealProtocol pid sid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   fork $ forever $ do
     m <- readChan z2p
     liftIO $ putStrLn $ "idealProtocol received from z2p " ++ pid
@@ -140,27 +149,33 @@ idealProtocol pid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
     writeChan p2a m
   return ()
 
-dummyAdversary (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+dummyAdversary sid (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= writeChan a2f
   fork $ forever $ readChan f2a >>= writeChan a2z
   return ()
 
-dummyFunctionality (p2f, f2p) (a2f, f2a) = do
+dummyFunctionality sid (p2f, f2p) (a2f, f2a) = do
 
   fork $ forever $ do
     (pid, m :: Int) <- readChan p2f 
     liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
-    writeChan f2p $ (pid, ())
+    writeChan f2p $ (pid, m)
   fork $ forever $ do
-    () <- readChan a2f
+    _ <- readChan a2f
     liftIO $ putStrLn $ "F: A"
     writeChan f2a $ ()
 
   return ()
               
 testEnv (p2z, z2p) (a2z, z2a) pump outp = do
+  -- Choose the sid
+  () <- readChan pump
+  writeChan z2a "sid1"
+  () <- readChan a2z
+  pass
+
   fork $ forever $ do
-    x :: (String, ()) <- readChan p2z
+    x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
     --writeChan outp ()
     pass
@@ -179,7 +194,11 @@ testEnv (p2z, z2p) (a2z, z2a) pump outp = do
       writeChan z2p ("Bob", 1)
 
   () <- readChan pump
-  writeChan z2a ()
+  writeChan z2a ""
 
 testExec :: IO ()
 testExec = runRand $ execUC testEnv (partyWrapper idealProtocol) dummyFunctionality dummyAdversary
+
+
+
+bidirectional 
