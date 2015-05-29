@@ -18,6 +18,9 @@ import ProcessIO
 import Data.IORef.MonadIO
 import Data.Map.Strict
 
+type PID = String
+type SID = String
+
 {- Provide input () until a value is received -}
 runUntilOutput :: (MonadRand m) => (Chan () -> Chan a -> ReaderT (Chan ()) m ()) -> m a
 runUntilOutput p = do
@@ -82,8 +85,6 @@ execUC z p f a = do
 
 -- Implement PIDs
 partyWrapper p sid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
-  -- TODO: handle corruptions
-
   -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
   -- to communicate with that instance of the protocol
   z2pid <- newIORef empty
@@ -132,6 +133,10 @@ partyWrapper p sid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
 
   return ()
 
+
+{----------------------------
+ Default / Ideal / Dummy  protocols and functionalities
+ ----------------------------}
 
 idealProtocol pid sid (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   fork $ forever $ do
@@ -198,7 +203,3 @@ testEnv (p2z, z2p) (a2z, z2a) pump outp = do
 
 testExec :: IO ()
 testExec = runRand $ execUC testEnv (partyWrapper idealProtocol) dummyFunctionality dummyAdversary
-
-
-
-
