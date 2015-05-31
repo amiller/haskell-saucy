@@ -191,11 +191,11 @@ dummyAdversary sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 dummyFunctionality sid crupt (p2f, f2p) (a2f, f2a) = do
   fork $ forever $ do
     (pid, m) <- readChan p2f
-    liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
+    liftIO $ putStrLn $ "F: [" ++ pid ++ "] " -- ++ show m
     writeChan f2p (pid, m)
   fork $ forever $ do
     m <- readChan a2f
-    liftIO $ putStrLn $ "F: A sent " ++ show m
+    liftIO $ putStrLn $ "F: A sent " -- ++ show m
     writeChan f2a $ m
   return ()
               
@@ -360,3 +360,136 @@ compose_zBad rho z (p2z, z2p) (a2z, z2a) pump outp = do
     if member pid crupt then fail "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
 
+
+
+{- Multi-session extensions -}
+
+{-
+ Given a functionality F, the multisession extension, !F, 
+ allows access to an arbitrary number of subinstances of F.
+ Each subinstance of F is passed a distinct SID string.
+ A composition theorem states that given a protocol pi realizing F,
+ !pi realizes !F (for the obvious natural definition of multisession 
+ protocols !pi)
+
+ -}
+
+bangF f sid crupt (p2f, f2p) (a2f, f2a) = do
+  -- Store a table that maps each SSID to a channel (f2p,a2p) used
+  -- to communicate with each subinstance of !f
+  p2ssid <- newIORef empty
+  a2ssid <- newIORef empty
+
+  let newSsid ssid = do
+        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new subinstance with ssid: " ++ ssid
+        let newSsid' _2ssid f2_ tag = do
+                     ff2_ <- newChan;
+                     _2ff <- newChan;
+                     fork $ forever $ do
+                                  m <- readChan ff2_
+                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag
+                                  writeChan f2_ (ssid, m)
+                     modifyIORef _2ssid $ insert ssid _2ff
+                     return (_2ff, ff2_)
+        p <- newSsid' p2ssid f2p "f2p"
+        a <- newSsid' a2ssid f2a "f2a"
+        fork $ f (show (ssid,sid)) crupt p a
+        return ()
+
+  let getSsid _2ssid ssid = do
+        b <- return . member ssid =<< readIORef _2ssid
+        if not b then newSsid ssid else return ()
+        readIORef _2ssid >>= return . (! ssid)
+
+  -- Route messages from parties to functionality
+  fork $ forever $ do
+    (pid, (ssid, m)) <- readChan p2f
+    liftIO $ putStrLn $ "!F wrapper p->f received " ++ ssid
+    getSsid p2ssid ssid >>= flip writeChan (pid, m)
+
+  -- Route messages from adversary to functionality
+  fork $ forever $ do
+    (ssid, m) <- readChan a2f
+    liftIO $ putStrLn $ "!F wrapper p->f received " ++ ssid
+    getSsid a2ssid ssid >>= flip writeChan m
+  return ()
+
+-- 
+bangP p pid sid (z2p, p2z) (f2p, p2f) = do
+  -- Store a table that maps each SSID to a channel (z2p,f2p) used
+  -- to communicate with each subinstance of !p
+  z2ssid <- newIORef empty
+  f2ssid <- newIORef empty
+
+  let newSsid ssid = do
+        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new protocol subinstance with ssid: " ++ ssid
+        let newSsid' _2ssid p2_ tag = do
+                     pp2_ <- newChan;
+                     _2pp <- newChan;
+                     fork $ forever $ do
+                                  m <- readChan pp2_
+                                  liftIO $ putStrLn $ "!P wrapper p->_ received " ++ tag
+                                  writeChan p2_ (ssid, m)
+                     modifyIORef _2ssid $ insert ssid _2pp
+                     return (_2pp, pp2_)
+        z <- newSsid' z2ssid p2z "p2z"
+        f <- newSsid' f2ssid p2f "p2f"
+        fork $ p pid (show (ssid,sid)) z f
+        return ()
+
+  let getSsid _2ssid ssid = do
+        b <- return . member ssid =<< readIORef _2ssid
+        if not b then newSsid ssid else return ()
+        readIORef _2ssid >>= return . (! ssid)
+
+  -- Route messages from environment to parties
+  fork $ forever $ do
+    (ssid, m) <- readChan z2p
+    liftIO $ putStrLn $ "!P wrapper z->p received " ++ ssid
+    getSsid z2ssid ssid >>= flip writeChan m
+
+  -- Route messages from functionality to parties
+  fork $ forever $ do
+    (ssid, m) <- readChan f2p
+    liftIO $ putStrLn $ "!P wrapper f->p received " ++ ssid
+    getSsid f2ssid ssid >>= flip writeChan m
+  return ()
+
+-- Theorem statement:
+--    (pi,f) ~ (phi,g) --> (!pi,!f) ~ (!phi,!g)
+
+
+{- Test cases for multisession -}
+
+testEnvMulti (p2z, z2p) (a2z, z2a) pump outp = do
+  -- Choose the sid and corruptions
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_SidCrupt "sid1" empty
+  _ <- readChan a2z
+  pass
+
+  fork $ forever $ do
+    x <- readChan p2z
+    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    --writeChan outp "()"
+    pass
+
+  fork $ forever $ do
+    m <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
+    writeChan outp "environment output: 1"
+
+  () <- readChan pump
+  liftIO $ putStrLn "pump"
+  b <- getBit
+  if b then
+      writeChan z2p ("Alice", ("ssidX", show "0"))
+  else
+      writeChan z2p ("Bob", ("ssidX", show "1"))
+
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2F ("ssidX", "ok")
+
+
+testExecMulti :: IO String
+testExecMulti = runRand $ execUC testEnvMulti (partyWrapper (bangP idealProtocol)) (bangF dummyFunctionality) dummyAdversary
