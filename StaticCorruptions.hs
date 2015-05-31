@@ -90,7 +90,7 @@ data SttCruptZ2A a b = SttCruptZ2A_SidCrupt SID (Map PID ()) | SttCruptZ2A_A2P (
 
 data SttCruptP2A a b = SttCruptP2A_Z2P (PID, a) | SttCruptP2A_F2P (PID, b) | SttCruptP2A_Ok deriving Show
 
-data SttCruptA2P a b = SttCruptA2P_P2F a | SttCruptA2P_P2Z b deriving Show
+data SttCruptA2P a = SttCruptA2P_P2F a deriving Show
 data SttCruptA2Z a b = SttCruptA2Z_P2Z a | SttCruptA2Z_F2Z b | SttCruptA2Z_Ok deriving Show
 
 --data SttCruptP2Z = SttCruptP2Z (PID, String)     | SttCruptP2Z_Crupt (Map PID ())
@@ -135,20 +135,14 @@ partyWrapper p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
         if not b then newPid pid else return ()
         readIORef _2pid >>= return . (! pid)
 
-  -- Route messages form environment to honest parties (or to A)
+  -- Route messages from environment to honest parties
   fork $ forever $ do
     (pid, m) <- readChan z2p
-    if member pid crupt
-    then do
-      -- If corrupted, send to A instead of to P
-      liftIO $ putStrLn $ "party wrapper z->p received (corrupt)"
-      writeChan p2a $ SttCruptP2A_Z2P (pid, m)
-    else do
-      -- Otherwise pass messages through to P
-      liftIO $ putStrLn $ "party wrapper z->p received"
-      getPid z2pid pid >>= flip writeChan m
+    if member pid crupt then fail "env sent to corrupted party!" else return undefined
+    liftIO $ putStrLn $ "party wrapper z->p received"
+    getPid z2pid pid >>= flip writeChan m
     
-  -- Route messages from functionality to honest parties (or to A)
+  -- Route messages from functionality to honest parties (or to Adv)
   fork $ forever $ do
     (pid, m) <- readChan f2p
     if member pid crupt
@@ -162,11 +156,9 @@ partyWrapper p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
       getPid f2pid pid >>= flip writeChan m
 
   fork $ forever $ do
-    (pid, m) <- readChan a2p
+    (pid, SttCruptA2P_P2F m) <- readChan a2p
     if not $ member pid crupt then fail "tried to send corrupted!" else return undefined
-    case m of
-      SttCruptA2P_P2F m' -> writeChan p2f (pid, m')
-      SttCruptA2P_P2Z m' -> writeChan p2z (pid, m')
+    writeChan p2f (pid, m)
 
   return ()
 
@@ -190,7 +182,7 @@ idealProtocol pid sid (z2p, p2z) (f2p, p2f) = do
 dummyAdversary sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
-        SttCruptZ2A_A2F b -> writeChan a2f b
+        SttCruptZ2A_A2F b        -> writeChan a2f b
         SttCruptZ2A_A2P (pid, m) -> writeChan a2p (pid, m)
   fork $ forever $ readChan f2a >>= writeChan a2z . SttCruptA2Z_F2Z
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2Z
@@ -222,7 +214,7 @@ testEnv (p2z, z2p) (a2z, z2a) pump outp = do
 
   fork $ forever $ do
     m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " ++ show m
+    --liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
   () <- readChan pump
@@ -290,12 +282,81 @@ compose rho p pid sid (z2p, p2z) (f2p, p2f) = do
 --       (pi,f) ~ (phi,g) --> (rho^pi,f) ~ (rho^phi,g)
 
 -- Proof:
---   Suppose (pi,f) emulates (phi,g). Then there exists a simulator (family) s such 
---   that
---     forall a z. execUC z pi f a ~!~ execUC z phi g (s a)
+--   Suppose (pi,f) emulates (phi,g). Then there exists a simulator s for the dummy
+--   adversary such that
+--     forall z. execUC z pi f dA ~ execUC z phi g s
 --
---   Suppose for contradiction rho^pi ~!~ rho^phi
---   Then there exists a bad environment badz and, such that
---     
+--   Suppose for contradiction rho^pi ~!~ rho^phi.
+--   Then there exists a bad environment z, such that
+--     forall s. execUC z rho^pi f dA ~!~ execUC z rho^phi g s
+--
+--   From this z we can construct a distingushing environment zBad such that
+--     execUC (zBad z) pi f dA ~!~ execUC (zBad z) phi g s
+--
+--   This contradicts the initial assumption.
+--
+--   Intuition:
+--      zBad runs an instance of z locally, and threads it through rho.
+--          - | z <--> rho <--|--> p
 
---compose_badz = do 
+--      This gives a perfect simulation of  
+--           execUC z rho^pi f dA
+--      on the left side and of
+--           execUC z rho^phi g s
+--      on the right.
+
+
+compose_zBad rho z (p2z, z2p) (a2z, z2a) pump outp = do
+
+  z2pid <- newIORef empty
+  f2pid <- newIORef empty
+
+  z2aZ <- newChan
+  a2zZ <- newChan
+          
+  z2pZ <- newChan
+  p2zZ <- newChan
+
+  -- Fork off local instance of z, and wait to receive sid and crupt.
+  fork $ z (p2zZ, z2pZ) (a2zZ, z2aZ) pump outp
+  SttCruptZ2A_SidCrupt sid crupt <- readChan z2aZ
+  writeChan z2a $ SttCruptZ2A_SidCrupt sid crupt
+
+  -- After intercepting the (sid,crupt), a and z communicate faithfully
+  fork $ forever $ readChan a2z >>= writeChan a2zZ
+  fork $ forever $ readChan z2aZ >>= writeChan z2a
+
+  -- subroutine to install a new instance of rho
+  let newPid pid = do
+        -- When rho communicates to z, it is routed correctly
+        pp2z <- newChan
+        z2pp <- newChan
+        fork $ forever $ readChan pp2z >>= writeChan p2zZ . ((,) pid)
+        modifyIORef z2pid $ insert pid z2pp
+                       
+        -- When rho communicates to F, it is routed to P
+        pp2f <- newChan
+        f2pp <- newChan
+        fork $ forever $ readChan pp2f >>= writeChan z2p . ((,) pid)
+        modifyIORef f2pid $ insert pid f2pp
+
+        fork $ rho pid sid (z2pp, pp2z) (f2pp, pp2f)
+        return ()
+
+  let getPid _2pid pid = do
+        b <- return . member pid =<< readIORef _2pid
+        if not b then newPid pid else return ()
+        readIORef _2pid >>= return . (! pid)
+
+  -- Routing between p and rho
+  fork $ forever $ do
+    (pid, m) <- readChan p2z
+    if member pid crupt then fail "p sent from corrupted party!" else return undefined
+    getPid f2pid pid >>= flip writeChan m
+
+  -- Routing between z and rho
+  fork $ forever $ do
+    (pid, m) <- readChan z2pZ
+    if member pid crupt then fail "env (z) sent to corrupted party!" else return undefined
+    getPid z2pid pid >>= flip writeChan m
+
