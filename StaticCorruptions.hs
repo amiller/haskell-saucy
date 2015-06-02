@@ -91,17 +91,17 @@ execUC z p f a = do
     fork $ runSID sid $ p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
     fork $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
-    writeChan a2z SttCruptA2Z_Ok
+    writeChan a2z SttCruptA2Z_SidCrupt
 
   runUntilOutput $ z (p2z, z2p) (a2z, z2a)
 
 
 data SttCruptZ2A a b = SttCruptZ2A_SidCrupt SID (Map PID ()) | SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Show
 
-data SttCruptP2A a b = SttCruptP2A_Z2P (PID, a) | SttCruptP2A_F2P (PID, b) | SttCruptP2A_Ok deriving Show
+--data SttCruptP2A a b = SttCruptP2A_F2P (PID, b) |  deriving Show
 
 data SttCruptA2P a = SttCruptA2P_P2F a deriving Show
-data SttCruptA2Z a b = SttCruptA2Z_P2Z a | SttCruptA2Z_F2Z b | SttCruptA2Z_Ok deriving Show
+data SttCruptA2Z a b = SttCruptA2Z_SidCrupt | SttCruptA2Z_P2Z a | SttCruptA2Z_F2Z b deriving Show
 
 --data SttCruptP2Z = SttCruptP2Z (PID, String)     | SttCruptP2Z_Crupt (Map PID ())
 --data SttCruptP2F = SttCruptP2F (PID, String)     | SttCruptP2F_Crupt (Map PID ())
@@ -161,7 +161,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
     then do
       -- If corrupted, send to A instead of to P
       liftIO $ putStrLn $ "party wrapper f->p received (corrupt)"
-      writeChan p2a $ SttCruptP2A_F2P (pid, m)
+      writeChan p2a (pid, m)
     else do
       -- Otherwise pass messages through to P
       liftIO $ putStrLn $ "party wrapper f->p received: " ++ show m
@@ -206,9 +206,9 @@ dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
     liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
     writeChan f2p (pid, m)
   fork $ forever $ do
-    m <- readChan a2f
-    liftIO $ putStrLn $ "F: A sent " -- ++ show m
-    writeChan f2a $ m
+    m :: String <- readChan a2f
+    liftIO $ putStrLn $ "F: A sent " ++ m
+    writeChan f2a $ ()
   return ()
               
 testEnv (p2z, z2p) (a2z, z2a) pump outp = do
@@ -400,7 +400,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
                      _2ff <- newChan;
                      fork $ forever $ do
                                   m <- readChan ff2_
-                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag ++ " " ++ show m
+                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag -- ++ " " ++ show m
                                   writeChan f2_ (ssid, m)
                      modifyIORef _2ssid $ insert ssid _2ff
                      return (_2ff, ff2_)
@@ -493,7 +493,7 @@ testEnvMulti (p2z, z2p) (a2z, z2a) pump outp = do
 
   fork $ forever $ do
     m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
+    liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
   () <- readChan pump
@@ -541,17 +541,17 @@ testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
     pass
 
   fork $ forever $ do
-    m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
+    m :: SttCruptA2Z (SID, (SID, String)) (SID, ()) <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
   () <- readChan pump
   liftIO $ putStrLn "pump"
   b <- getBit
   if b then
-      writeChan z2p ("Alice", ("ssidY", ("sssidX", show "0")))
+      writeChan z2p ("Alice", ("ssidY", ("sssidX", "0")))
   else
-      writeChan z2p ("Bob", ("ssidY", ("sssidX", show "1")))
+      writeChan z2p ("Bob", ("ssidY", ("sssidX", "1")))
 
   () <- readChan pump
   writeChan z2a $ SttCruptZ2A_A2F (show ("ssidY", "sssidX"), "ok")
@@ -559,7 +559,24 @@ testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
 testExecSquashReal :: IO String
 testExecSquashReal = runRand $ execUC testEnvSquash (partyWrapper squash) (bangF dummyFunctionality) dummyAdversary
 
---squashS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
-  
-    
-    
+squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  fork $ forever $ do
+    mf <- readChan z2a
+    case mf of
+      SttCruptZ2A_A2P (pid, (s, m)) -> let (ssid :: SID, sssid :: SID) = read s in 
+                                       writeChan a2p $ (pid, SttCruptA2P_P2F (ssid, (sssid, m)))
+      SttCruptZ2A_A2F (s, m) -> let (ssid :: SID, sssid :: SID) = read s in 
+                                writeChan a2f $ (ssid, (sssid, m))
+
+  fork $ forever $ do
+    (pid, (ssid, (sssid, m))) <- readChan p2a
+    writeChan a2z $ SttCruptA2Z_P2Z (pid, (show (ssid, sssid), m))
+
+  fork $ forever $ do
+    (ssid, (sssid, m)) <- readChan f2a
+    writeChan a2z $ SttCruptA2Z_F2Z (show (ssid, sssid), m)
+
+  return ()
+
+testExecSquashIdeal :: IO String
+testExecSquashIdeal = runRand $ execUC testEnvSquash (partyWrapper idealProtocol) (bangF (bangF dummyFunctionality)) squashS
