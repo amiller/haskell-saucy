@@ -164,7 +164,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
       writeChan p2a $ SttCruptP2A_F2P (pid, m)
     else do
       -- Otherwise pass messages through to P
-      liftIO $ putStrLn $ "party wrapper f->p received"
+      liftIO $ putStrLn $ "party wrapper f->p received: " ++ show m
       getPid f2pid pid >>= flip writeChan m
 
   fork $ forever $ do
@@ -203,7 +203,7 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
   fork $ forever $ do
     (pid, m) <- readChan p2f
-    liftIO $ putStrLn $ "F: [" ++ pid ++ "] " -- ++ show m
+    liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
     writeChan f2p (pid, m)
   fork $ forever $ do
     m <- readChan a2f
@@ -400,11 +400,12 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
                      _2ff <- newChan;
                      fork $ forever $ do
                                   m <- readChan ff2_
-                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag
+                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag ++ " " ++ show m
                                   writeChan f2_ (ssid, m)
                      modifyIORef _2ssid $ insert ssid _2ff
                      return (_2ff, ff2_)
-        p <- newSsid' p2ssid f2p "f2p"
+        f2p' <- wrap (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
+        p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
         fork $ runSID (show (ssid,sid)) $ f crupt p a
         return ()
@@ -423,7 +424,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
   -- Route messages from adversary to functionality
   fork $ forever $ do
     (ssid, m) <- readChan a2f
-    liftIO $ putStrLn $ "!F wrapper p->f received " ++ ssid
+    liftIO $ putStrLn $ "!F wrapper a->f received " ++ ssid
     getSsid a2ssid ssid >>= flip writeChan m
   return ()
 
@@ -472,6 +473,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
 
 -- Theorem statement:
 --    (pi,f) ~ (phi,g) --> (!pi,!f) ~ (!phi,!g)
+-- TODO: Simulator for this theorem statement
 
 
 {- Test cases for multisession -}
@@ -508,3 +510,56 @@ testEnvMulti (p2z, z2p) (a2z, z2a) pump outp = do
 
 testExecMulti :: IO String
 testExecMulti = runRand $ execUC testEnvMulti (partyWrapper (bangP idealProtocol)) (bangF dummyFunctionality) dummyAdversary
+
+
+{- Squash Theorem -}
+{- !F -> !!F -}
+{- (squash,!F) ~ (idealP,!!F) -}
+
+squash pid (z2p, p2z) (f2p, p2f) = do
+  fork $ forever $ do
+    (ssid :: SID, (sssid :: SID, m)) <- readChan z2p
+    writeChan p2f (show (ssid, sssid), m)
+  fork $ forever $ do
+    (s, m) <- readChan f2p
+    liftIO $ putStrLn $ "squash [f2p]: " ++ show s
+    let (ssid :: SID, sssid :: SID) = read s
+    writeChan p2z (ssid, (sssid, m))
+  return ()
+
+testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
+  -- Choose the sid and corruptions
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_SidCrupt "sid1" empty
+  _ <- readChan a2z
+  pass
+
+  fork $ forever $ do
+    x <- readChan p2z
+    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    --writeChan outp "()"
+    pass
+
+  fork $ forever $ do
+    m <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
+    writeChan outp "environment output: 1"
+
+  () <- readChan pump
+  liftIO $ putStrLn "pump"
+  b <- getBit
+  if b then
+      writeChan z2p ("Alice", ("ssidY", ("sssidX", show "0")))
+  else
+      writeChan z2p ("Bob", ("ssidY", ("sssidX", show "1")))
+
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2F (show ("ssidY", "sssidX"), "ok")
+
+testExecSquashReal :: IO String
+testExecSquashReal = runRand $ execUC testEnvSquash (partyWrapper squash) (bangF dummyFunctionality) dummyAdversary
+
+--squashS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  
+    
+    
