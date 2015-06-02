@@ -65,8 +65,10 @@ instance HasFork m => HasFork (ReaderT s m) where
 {- Processes can request random bits. Under the hood, these are implemented as ordinary channels -}
 class HasFork m => MonadRand m where
     getBit :: m Bool
+
+type RandomMonadT m = ReaderT (Chan (), Chan Bool) m
     
-instance HasFork m => MonadRand (ReaderT (Chan (), Chan Bool) m) where
+instance HasFork m => MonadRand (RandomMonadT m) where
     getBit = do 
       (ri,ro) <- ask
       writeChan ri ()
@@ -75,14 +77,27 @@ instance HasFork m => MonadRand (ReaderT (Chan (), Chan Bool) m) where
 instance MonadRand m => MonadRand (ReaderT s m) where
     getBit = lift getBit
 
-runRand :: HasFork m => ReaderT (Chan (), Chan Bool) m a -> m a
+runRand :: HasFork m => RandomMonadT m a -> m a
 runRand p = do
   ri <- newChan
   ro <- newChan
-  fork $ forever $ do
-               () <- readChan ro
-               writeChan ri =<< (liftIO $ randomRIO (False,True))
+  fork $ forever $ readChan ro >>= (const $ liftIO $ randomRIO (False,True)) >>= writeChan ri
   runReaderT p (ro, ri)
+
+_flippedRand :: MonadRand m => (forall n. MonadRand n => n a) -> m a
+_flippedRand f = do
+  ri <- newChan
+  ro <- newChan
+  fork $ forever $ do
+                   () <- readChan ri
+                   b <- getBit
+                   liftIO $ putStrLn $ "inner flip: " ++ show b
+                   writeChan ro (not b)
+  runReaderT f (ri, ro)
+
+test2 :: MonadRand m => m Bool
+--test2 = runRand getBit
+test2 = runRand $ _flippedRand getBit
 
 
 {- Provides a default channel to send on, when no message is intended -}
@@ -130,3 +145,5 @@ test1 = do
 
 --test1run :: IO ()
 --test1run = do { runRand $ test1; threadDelay 1000}
+
+

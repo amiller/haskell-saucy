@@ -23,6 +23,16 @@ import Data.Map.Strict
 type PID = String
 type SID = String
 
+class Monad m => MonadSID m where
+    getSID :: m SID
+
+instance Monad m => MonadSID (ReaderT SID m) where
+    getSID = ask
+
+type SIDMonadT = ReaderT SID
+runSID :: Monad m => SID -> SIDMonadT m a -> m a
+runSID = flip runReaderT
+
 {- Provide input () until a value is received -}
 runUntilOutput :: (MonadRand m) => (Chan () -> Chan a -> ReaderT (Chan ()) m ()) -> m a
 runUntilOutput p = do
@@ -77,9 +87,9 @@ execUC z p f a = do
     -- First, wait for the environment to choose an sid
     SttCruptZ2A_SidCrupt sid crupt <- readChan z2a
 
-    fork $ f sid crupt (p2f, f2p) (a2f, f2a)
-    fork $ p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
-    fork $ a sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
+    fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a)
+    fork $ runSID sid $ p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
+    fork $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
     writeChan a2z SttCruptA2Z_Ok
 
@@ -105,12 +115,14 @@ wrap f c = do
   return d
 
 -- Adversary must deliver: Either [String] (String,*)
-partyWrapper p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
+partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
   -- to communicate with that instance of the protocol
   z2pid <- newIORef empty
   f2pid <- newIORef empty
 
+  sid <- getSID
+  
   -- subroutine to install a new party
   let newPid pid = do
         liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new party with pid:" ++ pid
@@ -125,7 +137,7 @@ partyWrapper p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
                      return (_2pp, pp2_)
         z <- newPid' z2pid p2z "p2z"
         f <- newPid' f2pid p2f "p2f"
-        fork $ p pid sid z f
+        fork $ p pid z f
         return ()
 
   -- Retrieve the {z2p,f2p,a2p} channel by PID (or install a new party if this is 
@@ -168,7 +180,7 @@ partyWrapper p sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
  Default / Ideal / Dummy  protocols and functionalities
  ----------------------------}
 
-idealProtocol pid sid (z2p, p2z) (f2p, p2f) = do
+idealProtocol pid (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     m <- readChan z2p
     liftIO $ putStrLn $ "idealProtocol received from z2p " ++ pid
@@ -179,7 +191,7 @@ idealProtocol pid sid (z2p, p2z) (f2p, p2f) = do
     writeChan p2z m
   return ()
 
-dummyAdversary sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
         SttCruptZ2A_A2F b        -> writeChan a2f b
@@ -188,7 +200,7 @@ dummyAdversary sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2Z
   return ()
 
-dummyFunctionality sid crupt (p2f, f2p) (a2f, f2a) = do
+dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
   fork $ forever $ do
     (pid, m) <- readChan p2f
     liftIO $ putStrLn $ "F: [" ++ pid ++ "] " -- ++ show m
@@ -245,7 +257,7 @@ testExec = runRand $ execUC testEnv (partyWrapper idealProtocol) dummyFunctional
 --      z <--|--> a <--> dS <--|--> f or p
 
 
-lemS dS a sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+lemS dS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   a2pfS <- newChan
   a2fS <- wrap SttCruptZ2A_A2F a2pfS
@@ -261,8 +273,8 @@ lemS dS a sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
       SttCruptA2Z_F2Z m -> writeChan f2aS m
       SttCruptA2Z_P2Z m -> writeChan p2aS m
     
-  fork $  a sid crupt (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS)
-  fork $ dS sid crupt (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f)
+  fork $  a crupt (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS)
+  fork $ dS crupt (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f)
 
 
 {- Protocol Composition Theorem -}
@@ -271,11 +283,11 @@ lemS dS a sid crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 --   This is different than the operation in UC Canetti, 
 --   but the same as in Canetti Authentication
 
-compose rho p pid sid (z2p, p2z) (f2p, p2f) = do
+compose rho p pid (z2p, p2z) (f2p, p2f) = do
   r2p <- newChan
   p2r <- newChan
-  fork $ rho pid sid (z2p, p2z) (r2p, p2r)
-  fork $ p   pid sid            (p2r, r2p) (f2p, p2f)
+  fork $ rho pid (z2p, p2z) (r2p, p2r)
+  fork $ p   pid            (p2r, r2p) (f2p, p2f)
 
 
 -- Theorem statement:
@@ -340,7 +352,7 @@ compose_zBad rho z (p2z, z2p) (a2z, z2a) pump outp = do
         fork $ forever $ readChan pp2f >>= writeChan z2p . ((,) pid)
         modifyIORef f2pid $ insert pid f2pp
 
-        fork $ rho pid sid (z2pp, pp2z) (f2pp, pp2f)
+        fork $ rho pid (z2pp, pp2z) (f2pp, pp2f)
         return ()
 
   let getPid _2pid pid = do
@@ -374,11 +386,12 @@ compose_zBad rho z (p2z, z2p) (a2z, z2a) pump outp = do
 
  -}
 
-bangF f sid crupt (p2f, f2p) (a2f, f2a) = do
+bangF f crupt (p2f, f2p) (a2f, f2a) = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
   a2ssid <- newIORef empty
+  sid <- getSID
 
   let newSsid ssid = do
         liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new subinstance with ssid: " ++ ssid
@@ -393,7 +406,7 @@ bangF f sid crupt (p2f, f2p) (a2f, f2a) = do
                      return (_2ff, ff2_)
         p <- newSsid' p2ssid f2p "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ f (show (ssid,sid)) crupt p a
+        fork $ runSID (show (ssid,sid)) $ f crupt p a
         return ()
 
   let getSsid _2ssid ssid = do
@@ -415,11 +428,13 @@ bangF f sid crupt (p2f, f2p) (a2f, f2a) = do
   return ()
 
 -- 
-bangP p pid sid (z2p, p2z) (f2p, p2f) = do
+bangP p pid (z2p, p2z) (f2p, p2f) = do
   -- Store a table that maps each SSID to a channel (z2p,f2p) used
   -- to communicate with each subinstance of !p
   z2ssid <- newIORef empty
   f2ssid <- newIORef empty
+
+  sid <- getSID
 
   let newSsid ssid = do
         liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new protocol subinstance with ssid: " ++ ssid
@@ -434,7 +449,7 @@ bangP p pid sid (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ p pid (show (ssid,sid)) z f
+        fork $ runSID (show (ssid,sid)) $ p pid  z f
         return ()
 
   let getSsid _2ssid ssid = do
