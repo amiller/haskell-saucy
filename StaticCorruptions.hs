@@ -21,7 +21,7 @@ import Data.IORef.MonadIO
 import Data.Map.Strict
 
 type PID = String
-type SID = String
+type SID = (String, String)
 
 class Monad m => MonadSID m where
     getSID :: m SID
@@ -88,7 +88,7 @@ execUC z p f a = do
     SttCruptZ2A_SidCrupt sid crupt <- readChan z2a
 
     fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a)
-    fork $ runSID sid $ p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
+    fork $ runSID sid $ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
     fork $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
     writeChan a2z SttCruptA2Z_SidCrupt
@@ -114,7 +114,6 @@ wrap f c = do
   fork $ forever $ readChan d >>= writeChan c . f 
   return d
 
--- Adversary must deliver: Either [String] (String,*)
 partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
   -- to communicate with that instance of the protocol
@@ -125,7 +124,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   
   -- subroutine to install a new party
   let newPid pid = do
-        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new party with pid:" ++ pid
+        liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new party with pid:" ++ pid
         let newPid' _2pid p2_ tag = do
                      pp2_ <- newChan;
                      _2pp <- newChan;
@@ -208,13 +207,15 @@ dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
   fork $ forever $ do
     m :: String <- readChan a2f
     liftIO $ putStrLn $ "F: A sent " ++ m
-    writeChan f2a $ ()
+    writeChan f2a $ m
   return ()
-              
+
+
+
 testEnv (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_SidCrupt "sid1" empty
+  writeChan z2a $ SttCruptZ2A_SidCrupt ("sid1","") empty
   _ <- readChan a2z
   pass
 
@@ -226,7 +227,7 @@ testEnv (p2z, z2p) (a2z, z2a) pump outp = do
 
   fork $ forever $ do
     m <- readChan a2z
-    --liftIO $ putStrLn $ "Z: a sent " ++ show m
+    liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
   () <- readChan pump
@@ -241,7 +242,9 @@ testEnv (p2z, z2p) (a2z, z2a) pump outp = do
   writeChan z2a $ SttCruptZ2A_A2F "ok"
 
 testExec :: IO String
-testExec = runRand $ execUC testEnv (partyWrapper idealProtocol) dummyFunctionality dummyAdversary
+testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
+
+
 
 
 {- Dummy lemma -}
@@ -394,7 +397,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
   sid <- getSID
 
   let newSsid ssid = do
-        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new subinstance with ssid: " ++ ssid
+        liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new subinstance with ssid: " ++ show ssid
         let newSsid' _2ssid f2_ tag = do
                      ff2_ <- newChan;
                      _2ff <- newChan;
@@ -407,7 +410,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
         f2p' <- wrap (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (show (ssid,sid)) $ f crupt p a
+        fork $ runSID (show sid, show ssid) $ f crupt p a
         return ()
 
   let getSsid _2ssid ssid = do
@@ -418,13 +421,13 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
   -- Route messages from parties to functionality
   fork $ forever $ do
     (pid, (ssid, m)) <- readChan p2f
-    liftIO $ putStrLn $ "!F wrapper p->f received " ++ ssid
+    liftIO $ putStrLn $ "!F wrapper p->f received " ++ show ssid
     getSsid p2ssid ssid >>= flip writeChan (pid, m)
 
   -- Route messages from adversary to functionality
   fork $ forever $ do
     (ssid, m) <- readChan a2f
-    liftIO $ putStrLn $ "!F wrapper a->f received " ++ ssid
+    liftIO $ putStrLn $ "!F wrapper a->f received " ++ show ssid
     getSsid a2ssid ssid >>= flip writeChan m
   return ()
 
@@ -438,7 +441,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
   sid <- getSID
 
   let newSsid ssid = do
-        liftIO $ putStrLn $ "[" ++ sid ++ "] Creating new protocol subinstance with ssid: " ++ ssid
+        liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new protocol subinstance with ssid: " ++ show ssid
         let newSsid' _2ssid p2_ tag = do
                      pp2_ <- newChan;
                      _2pp <- newChan;
@@ -450,7 +453,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ runSID (show (ssid,sid)) $ p pid  z f
+        fork $ runSID (show sid, show ssid) $ p pid z f
         return ()
 
   let getSsid _2ssid ssid = do
@@ -461,13 +464,13 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
   -- Route messages from environment to parties
   fork $ forever $ do
     (ssid, m) <- readChan z2p
-    liftIO $ putStrLn $ "!P wrapper z->p received " ++ ssid
+    liftIO $ putStrLn $ "!P wrapper z->p received " ++ show ssid
     getSsid z2ssid ssid >>= flip writeChan m
 
   -- Route messages from functionality to parties
   fork $ forever $ do
     (ssid, m) <- readChan f2p
-    liftIO $ putStrLn $ "!P wrapper f->p received " ++ ssid
+    liftIO $ putStrLn $ "!P wrapper f->p received " ++ show ssid
     getSsid f2ssid ssid >>= flip writeChan m
   return ()
 
@@ -481,7 +484,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
 testEnvMulti (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_SidCrupt "sid1" empty
+  writeChan z2a $ SttCruptZ2A_SidCrupt ("sid1","") empty
   _ <- readChan a2z
   pass
 
@@ -500,16 +503,16 @@ testEnvMulti (p2z, z2p) (a2z, z2a) pump outp = do
   liftIO $ putStrLn "pump"
   b <- getBit
   if b then
-      writeChan z2p ("Alice", ("ssidX", show "0"))
+      writeChan z2p ("Alice", (("ssidX",""), show "0"))
   else
-      writeChan z2p ("Bob", ("ssidX", show "1"))
+      writeChan z2p ("Bob", (("ssidX",""), show "1"))
 
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_A2F ("ssidX", "ok")
+  writeChan z2a $ SttCruptZ2A_A2F (("ssidX",""), "ok")
 
 
 testExecMulti :: IO String
-testExecMulti = runRand $ execUC testEnvMulti (partyWrapper (bangP idealProtocol)) (bangF dummyFunctionality) dummyAdversary
+testExecMulti = runRand $ execUC testEnvMulti (bangP idealProtocol) (bangF dummyFunctionality) dummyAdversary
 
 
 {- Squash Theorem -}
@@ -519,18 +522,18 @@ testExecMulti = runRand $ execUC testEnvMulti (partyWrapper (bangP idealProtocol
 squash pid (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     (ssid :: SID, (sssid :: SID, m)) <- readChan z2p
-    writeChan p2f (show (ssid, sssid), m)
+    writeChan p2f ((show ssid, show sssid), m)
   fork $ forever $ do
-    (s, m) <- readChan f2p
+    (s :: SID, m) <- readChan f2p
     liftIO $ putStrLn $ "squash [f2p]: " ++ show s
-    let (ssid :: SID, sssid :: SID) = read s
+    let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s)
     writeChan p2z (ssid, (sssid, m))
   return ()
 
 testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_SidCrupt "sid1" empty
+  writeChan z2a $ SttCruptZ2A_SidCrupt ("sid1","") empty
   _ <- readChan a2z
   pass
 
@@ -541,7 +544,7 @@ testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
     pass
 
   fork $ forever $ do
-    m :: SttCruptA2Z (SID, (SID, String)) (SID, ()) <- readChan a2z
+    m :: SttCruptA2Z (PID, (SID, String)) (SID, a) <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
@@ -549,34 +552,35 @@ testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
   liftIO $ putStrLn "pump"
   b <- getBit
   if b then
-      writeChan z2p ("Alice", ("ssidY", ("sssidX", "0")))
+      writeChan z2p ("Alice", (("ssidY",""), (("sssidX",""), "0")))
   else
-      writeChan z2p ("Bob", ("ssidY", ("sssidX", "1")))
+      writeChan z2p ("Bob",   (("ssidY",""), (("sssidX",""), "1")))
 
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_A2F (show ("ssidY", "sssidX"), "ok")
+  writeChan z2a $ SttCruptZ2A_A2F ((show ("ssidY",""), show ("sssidX","")), "ok")
 
 testExecSquashReal :: IO String
-testExecSquashReal = runRand $ execUC testEnvSquash (partyWrapper squash) (bangF dummyFunctionality) dummyAdversary
+testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctionality) dummyAdversary
 
 squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ do
     mf <- readChan z2a
     case mf of
-      SttCruptZ2A_A2P (pid, (s, m)) -> let (ssid :: SID, sssid :: SID) = read s in 
+      SttCruptZ2A_A2P (pid, (s, m)) -> let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s)  in 
                                        writeChan a2p $ (pid, SttCruptA2P_P2F (ssid, (sssid, m)))
-      SttCruptZ2A_A2F (s, m) -> let (ssid :: SID, sssid :: SID) = read s in 
-                                writeChan a2f $ (ssid, (sssid, m))
+      SttCruptZ2A_A2F (s, m)        -> let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s) in 
+                                       writeChan a2f $ (ssid, (sssid, m))
 
   fork $ forever $ do
     (pid, (ssid, (sssid, m))) <- readChan p2a
-    writeChan a2z $ SttCruptA2Z_P2Z (pid, (show (ssid, sssid), m))
+    writeChan a2z $ SttCruptA2Z_P2Z (pid, ((show ssid, show sssid), m))
 
   fork $ forever $ do
     (ssid, (sssid, m)) <- readChan f2a
-    writeChan a2z $ SttCruptA2Z_F2Z (show (ssid, sssid), m)
+    writeChan a2z $ SttCruptA2Z_F2Z ((show ssid, show sssid), m)
 
   return ()
 
 testExecSquashIdeal :: IO String
-testExecSquashIdeal = runRand $ execUC testEnvSquash (partyWrapper idealProtocol) (bangF (bangF dummyFunctionality)) squashS
+testExecSquashIdeal = runRand $ execUC testEnvSquash idealProtocol (bangF (bangF dummyFunctionality)) squashS
+
