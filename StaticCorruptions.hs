@@ -130,7 +130,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
                      _2pp <- newChan;
                      fork $ forever $ do
                                   m <- readChan pp2_
-                                  liftIO $ putStrLn $ "party wrapper p->_ received " ++ tag
+                                  --liftIO $ putStrLn $ "party wrapper p->_ received " ++ tag
                                   writeChan p2_ (pid, m)
                      modifyIORef _2pid $ insert pid _2pp
                      return (_2pp, pp2_)
@@ -150,7 +150,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   fork $ forever $ do
     (pid, m) <- readChan z2p
     if member pid crupt then fail "env sent to corrupted party!" else return undefined
-    liftIO $ putStrLn $ "party wrapper z->p received"
+    --liftIO $ putStrLn $ "party wrapper z->p received"
     getPid z2pid pid >>= flip writeChan m
     
   -- Route messages from functionality to honest parties (or to Adv)
@@ -159,11 +159,11 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
     if member pid crupt
     then do
       -- If corrupted, send to A instead of to P
-      liftIO $ putStrLn $ "party wrapper f->p received (corrupt)"
+      --liftIO $ putStrLn $ "party wrapper f->p received (corrupt)"
       writeChan p2a (pid, m)
     else do
       -- Otherwise pass messages through to P
-      liftIO $ putStrLn $ "party wrapper f->p received: " ++ show m
+      --liftIO $ putStrLn $ "party wrapper f->p received: " ++ show m
       getPid f2pid pid >>= flip writeChan m
 
   fork $ forever $ do
@@ -182,11 +182,11 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
 idealProtocol pid (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     m <- readChan z2p
-    liftIO $ putStrLn $ "idealProtocol received from z2p " ++ pid
+    --liftIO $ putStrLn $ "idealProtocol received from z2p " ++ pid
     writeChan p2f m
   fork $ forever $ do
     m <- readChan f2p
-    liftIO $ putStrLn $ "idealProtocol received from f2p " ++ pid
+    --liftIO $ putStrLn $ "idealProtocol received from f2p " ++ pid
     writeChan p2z m
   return ()
 
@@ -397,20 +397,20 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
   sid <- getSID
 
   let newSsid ssid = do
-        liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new subinstance with ssid: " ++ show ssid
+        --liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new subinstance with ssid: " ++ show ssid
         let newSsid' _2ssid f2_ tag = do
                      ff2_ <- newChan;
                      _2ff <- newChan;
                      fork $ forever $ do
                                   m <- readChan ff2_
-                                  liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag -- ++ " " ++ show m
+                                  --liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag -- ++ " " ++ show m
                                   writeChan f2_ (ssid, m)
                      modifyIORef _2ssid $ insert ssid _2ff
                      return (_2ff, ff2_)
         f2p' <- wrap (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (show sid, show ssid) $ f crupt p a
+        fork $ runSID (show (sid, fst ssid), snd ssid) $ f crupt p a
         return ()
 
   let getSsid _2ssid ssid = do
@@ -421,13 +421,13 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
   -- Route messages from parties to functionality
   fork $ forever $ do
     (pid, (ssid, m)) <- readChan p2f
-    liftIO $ putStrLn $ "!F wrapper p->f received " ++ show ssid
+    --liftIO $ putStrLn $ "!F wrapper p->f received " ++ show ssid
     getSsid p2ssid ssid >>= flip writeChan (pid, m)
 
   -- Route messages from adversary to functionality
   fork $ forever $ do
     (ssid, m) <- readChan a2f
-    liftIO $ putStrLn $ "!F wrapper a->f received " ++ show ssid
+    --liftIO $ putStrLn $ "!F wrapper a->f received " ++ show ssid
     getSsid a2ssid ssid >>= flip writeChan m
   return ()
 
@@ -453,7 +453,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ runSID (show sid, show ssid) $ p pid z f
+        fork $ runSID (show (sid, fst ssid), snd ssid) $ p pid z f
         return ()
 
   let getSsid _2ssid ssid = do
@@ -522,11 +522,13 @@ testExecMulti = runRand $ execUC testEnvMulti (bangP idealProtocol) (bangF dummy
 squash pid (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     (ssid :: SID, (sssid :: SID, m)) <- readChan z2p
-    writeChan p2f ((show ssid, show sssid), m)
+    writeChan p2f ((show (ssid, fst sssid), snd sssid), m)
   fork $ forever $ do
     (s :: SID, m) <- readChan f2p
-    liftIO $ putStrLn $ "squash [f2p]: " ++ show s
-    let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s)
+    --liftIO $ putStrLn $ "squash [f2p]: " ++ show s
+    let sndsssid = snd s
+    let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+    let sssid = (fstsssid, sndsssid)
     writeChan p2z (ssid, (sssid, m))
   return ()
 
@@ -557,7 +559,7 @@ testEnvSquash (p2z, z2p) (a2z, z2a) pump outp = do
       writeChan z2p ("Bob",   (("ssidY",""), (("sssidX",""), "1")))
 
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_A2F ((show ("ssidY",""), show ("sssidX","")), "ok")
+  writeChan z2a $ SttCruptZ2A_A2F ((show (("ssidY",""), "sssidX"), ""), "ok")
 
 testExecSquashReal :: IO String
 testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctionality) dummyAdversary
@@ -566,18 +568,25 @@ squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ do
     mf <- readChan z2a
     case mf of
-      SttCruptZ2A_A2P (pid, (s, m)) -> let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s)  in 
-                                       writeChan a2p $ (pid, SttCruptA2P_P2F (ssid, (sssid, m)))
-      SttCruptZ2A_A2F (s, m)        -> let (ssid :: SID, sssid :: SID) = (read $ fst s, read $ snd s) in 
-                                       writeChan a2f $ (ssid, (sssid, m))
+      SttCruptZ2A_A2P (pid, (s, m)) -> do
+                     let sndsssid = snd s
+                     let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+                     let sssid = (fstsssid, sndsssid)
+                     writeChan a2p $ (pid, SttCruptA2P_P2F (ssid, (sssid, m)))
+      SttCruptZ2A_A2F (s, m)        -> do
+                     let sndsssid = snd s
+                     let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+                     let sssid = (fstsssid, sndsssid)
+                     writeChan a2f $ (ssid, (sssid, m))
 
   fork $ forever $ do
     (pid, (ssid, (sssid, m))) <- readChan p2a
-    writeChan a2z $ SttCruptA2Z_P2Z (pid, ((show ssid, show sssid), m))
+    writeChan a2z $ SttCruptA2Z_P2Z (pid, ((show (ssid, fst sssid), snd sssid), m))
+    undefined
 
   fork $ forever $ do
     (ssid, (sssid, m)) <- readChan f2a
-    writeChan a2z $ SttCruptA2Z_F2Z ((show ssid, show sssid), m)
+    writeChan a2z $ SttCruptA2Z_F2Z ((show (ssid, fst sssid), snd sssid), m)
 
   return ()
 
