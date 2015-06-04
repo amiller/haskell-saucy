@@ -91,6 +91,7 @@ runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
 
 
+
 fSync crupt (p2f, f2p) (a2f, f2a) = do
   -- Parse SID as sender, recipient, ssid
   sid <- getSID
@@ -121,7 +122,7 @@ fSync crupt (p2f, f2p) (a2f, f2a) = do
   return ()
 
 
-testEnvBangBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+testEnvSquashBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sidTestBangBangSync","") empty
 
@@ -139,23 +140,23 @@ testEnvBangBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
 
   -- Register both parties
   () <- readChan pump
-  writeChan z2p ("Alice", DuplexZ2P_Left ClockP2F_RoundOK)
+  writeChan z2p ("Alice", DuplexP2F_Left ClockP2F_RoundOK)
   () <- readChan pump
-  writeChan z2p ("Bob",   DuplexZ2P_Left ClockP2F_RoundOK)
+  writeChan z2p ("Bob",   DuplexP2F_Left ClockP2F_RoundOK)
 
   -- Send a message
   () <- readChan pump
-  writeChan z2p ("Alice", DuplexZ2P_Right (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), "hello!")))
+  writeChan z2p ("Alice", DuplexP2F_Right (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), "hello!")))
 
   -- Advance the round counter
   () <- readChan pump
-  writeChan z2p ("Alice", DuplexZ2P_Left ClockP2F_RoundOK)
+  writeChan z2p ("Alice", DuplexP2F_Left ClockP2F_RoundOK)
   () <- readChan pump
-  writeChan z2p ("Bob",   DuplexZ2P_Left ClockP2F_RoundOK)
+  writeChan z2p ("Bob",   DuplexP2F_Left ClockP2F_RoundOK)
 
   -- Receive a message
   () <- readChan pump
-  writeChan z2p ("Bob", DuplexZ2P_Right (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), undefined)))
+  writeChan z2p ("Bob", DuplexP2F_Right (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), undefined)))
   () <- readChan pump
   writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Left ClockA2F_GetState
 
@@ -163,8 +164,33 @@ testEnvBangBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   writeChan outp "environment output: 1"
 
 
-testExecBangBangSyncReal :: IO String
-testExecBangBangSyncReal = runRand $ execUC testEnvBangBangSync (runClockP squash) (runClockF $ bangF fSync) dummyAdversary
+testEnvDumb z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+  -- Choose the sid and corruptions
+  writeChan z2exec $ SttCrupt_SidCrupt ("sidTestBangBangSync","") empty
 
-testExecBangBangSyncIdeal :: IO String
-testExecBangBangSyncIdeal = runRand $ execUC testEnvBangBangSync (runClockP idealProtocol) (runClockF $ bangF $ bangF fSync) (runClockS squashS)
+  fork $ forever $ do
+    x <- readChan p2z
+    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    --writeChan outp ()
+    pass
+
+  fork $ forever $ do
+    m <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " ++ show m
+    --writeChan outp "environment output: 1"
+    pass
+
+  () <- readChan pump 
+  writeChan outp "environment output: 1"
+
+-- Identities:
+--  runClockP idealProtocol  ~= idealProtocol
+--  runClockS dummyAdvesrary ~= dummyAdversary
+
+
+testSquashBangIdeal :: IO String
+testSquashBangIdeal = runRand $ execUC testEnvSquashBangSync idealProtocol (runClockF $ bangF $ bangF $ fSync) (runClockS squashS)
+
+testSquashBangReal :: IO String
+testSquashBangReal = runRand $ execUC testEnvSquashBangSync (runClockP squash) (runClockF $ bangF $ fSync) dummyAdversary
+

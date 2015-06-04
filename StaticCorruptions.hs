@@ -99,15 +99,7 @@ execUC z p f a = do
 data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID (Map PID ()) deriving Show
 
 data SttCruptZ2A a b = SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Show
-data SttCruptA2P a = SttCruptA2P_P2F (PID, a) deriving Show
-data SttCruptA2Z a b = SttCruptA2Z_P2A a | SttCruptA2Z_F2A b deriving Show
-
---data SttCruptP2A a b = SttCruptP2A_F2P (PID, b) |  deriving Show
---data SttCruptP2Z = SttCruptP2Z (PID, String)     | SttCruptP2Z_Crupt (Map PID ())
---data SttCruptP2F = SttCruptP2F (PID, String)     | SttCruptP2F_Crupt (Map PID ())
-
---data SttCruptZ2P = SttCruptZ2P (PID, String)     | SttCruptZ2P_Crupt
---data SttCruptF2P = SttCruptF2P (PID, String)     | SttCruptF2P_Crupt
+data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving Show
 
 wrap f c = do
   d <- newChan 
@@ -167,7 +159,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
       getPid f2pid pid >>= flip writeChan m
 
   fork $ forever $ do
-    SttCruptA2P_P2F (pid, m) <- readChan a2p
+    (pid, m) <- readChan a2p
     if not $ member pid crupt then fail "tried to send corrupted!" else return undefined
     writeChan p2f (pid, m)
 
@@ -194,7 +186,7 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
         SttCruptZ2A_A2F b        -> writeChan a2f b
-        SttCruptZ2A_A2P (pid, m) -> writeChan a2p $ SttCruptA2P_P2F (pid, m)
+        SttCruptZ2A_A2P (pid, m) -> writeChan a2p (pid, m)
   fork $ forever $ readChan f2a >>= writeChan a2z . SttCruptA2Z_F2A
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2A
   return ()
@@ -540,7 +532,7 @@ testEnvSquash z2exec (p2z, z2p) (a2z, z2a) pump outp = do
     pass
 
   fork $ forever $ do
-    m :: SttCruptA2Z (PID, (SID, String)) (SID, a) <- readChan a2z
+    m <- readChan a2z -- :: SttCruptA2Z (SID, String) (SID, a) <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show m
     writeChan outp "environment output: 1"
 
@@ -564,7 +556,7 @@ squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
                      let sndsssid = snd s
                      let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
                      let sssid = (fstsssid, sndsssid)
-                     writeChan a2p $ SttCruptA2P_P2F (pid, (ssid, (sssid, m)))
+                     writeChan a2p (pid, (ssid, (sssid, m)))
       SttCruptZ2A_A2F (s, m)        -> do
                      let sndsssid = snd s
                      let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s

@@ -27,9 +27,6 @@ data DuplexF2P a b = DuplexF2P_Left a | DuplexF2P_Right b deriving Show
 data DuplexZ2P a b = DuplexZ2P_Left a | DuplexZ2P_Right b deriving Show
 data DuplexP2Z a b = DuplexP2Z_Left a | DuplexP2Z_Right b deriving Show
 
-data DuplexA2Z a b = DuplexA2Z_Left a | DuplexA2Z_Right b deriving Show
---data DuplexZ2A a b = DuplexZ2A_Left a | DuplexZ2A_Right b deriving Show
-
 data DuplexA2P a b = DuplexA2P_Left a | DuplexA2P_Right b deriving Show
 data DuplexP2A a b = DuplexP2A_Left a | DuplexP2A_Right b deriving Show
 
@@ -59,8 +56,8 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) = do
 
   p2fL <- newChan
   p2fR <- newChan
-  f2pL <- wrap (\(pid,m) -> (pid, DuplexF2P_Left  m)) f2p
-  f2pR <- wrap (\(pid,m) -> (pid, DuplexF2P_Right m)) f2p
+  f2pL <- wrap (\(pid, m) -> (pid, DuplexF2P_Left  m)) f2p
+  f2pR <- wrap (\(pid, m) -> (pid, DuplexF2P_Right m)) f2p
 
   a2fL <- newChan
   a2fR <- newChan
@@ -101,8 +98,8 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
 
   fork $ forever $ do
     mf <- readChan z2p
-    case mf of DuplexZ2P_Left  m -> writeChan z2pL m
-               DuplexZ2P_Right m -> writeChan z2pR m
+    case mf of DuplexP2F_Left  m -> writeChan z2pL m
+               DuplexP2F_Right m -> writeChan z2pR m
 
   fork $ forever $ do
     mf <- readChan f2p
@@ -123,12 +120,10 @@ runDuplexS sL sR crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   z2aR <- newChan
   a2zL <- newChan
   a2zR <- newChan
-  --a2zL <- wrap DuplexA2Z_Left  a2z
-  --a2zR <- wrap DuplexA2Z_Right a2z
   p2aL <- newChan
   p2aR <- newChan
-  a2pL <- wrap (\(SttCruptA2P_P2F (pid, m)) -> SttCruptA2P_P2F (pid, DuplexP2F_Left  m)) a2p
-  a2pR <- wrap (\(SttCruptA2P_P2F (pid, m)) -> SttCruptA2P_P2F (pid, DuplexP2F_Right m)) a2p
+  a2pL <- wrap (\(pid, m) -> (pid, DuplexP2F_Left  m)) a2p
+  a2pR <- wrap (\(pid, m) -> (pid, DuplexP2F_Right m)) a2p
   a2pR <- newChan
   f2aL <- newChan
   f2aR <- newChan
@@ -137,18 +132,18 @@ runDuplexS sL sR crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   fork $ forever $ do
     mf <- readChan a2zL
-    case mf of SttCruptA2Z_F2A m -> writeChan a2z $ SttCruptA2Z_F2A (DuplexF2A_Left m)
-               SttCruptA2Z_P2A m -> writeChan a2z $ SttCruptA2Z_P2A (DuplexP2A_Left m)
+    case mf of SttCruptA2Z_F2A       m  -> writeChan a2z $ SttCruptA2Z_F2A (     DuplexF2A_Left m)
+               SttCruptA2Z_P2A (pid, m) -> writeChan a2z $ SttCruptA2Z_P2A (pid, DuplexF2P_Left m)
 
   fork $ forever $ do
     mf <- readChan a2zR
-    case mf of SttCruptA2Z_F2A m -> writeChan a2z $ SttCruptA2Z_F2A (DuplexF2A_Right m)
-               SttCruptA2Z_P2A m -> writeChan a2z $ SttCruptA2Z_P2A (DuplexP2A_Right m)
+    case mf of SttCruptA2Z_F2A       m  -> writeChan a2z $ SttCruptA2Z_F2A (     DuplexF2A_Right m)
+               SttCruptA2Z_P2A (pid, m) -> writeChan a2z $ SttCruptA2Z_P2A (pid, DuplexF2P_Right m)
 
   fork $ forever $ do
     mf <- readChan z2a
-    case mf of SttCruptZ2A_A2P (pid, DuplexA2P_Left  m) -> writeChan z2aL $ SttCruptZ2A_A2P (pid, m)
-               SttCruptZ2A_A2P (pid, DuplexA2P_Right m) -> writeChan z2aR $ SttCruptZ2A_A2P (pid, m)
+    case mf of SttCruptZ2A_A2P (pid, DuplexP2F_Left  m) -> writeChan z2aL $ SttCruptZ2A_A2P (pid, m)
+               SttCruptZ2A_A2P (pid, DuplexP2F_Right m) -> writeChan z2aR $ SttCruptZ2A_A2P (pid, m)
                SttCruptZ2A_A2F (DuplexA2F_Left  m) -> writeChan z2aL $ SttCruptZ2A_A2F m
                SttCruptZ2A_A2F (DuplexA2F_Right m) -> writeChan z2aR $ SttCruptZ2A_A2F m
 
