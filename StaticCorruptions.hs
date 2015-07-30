@@ -7,6 +7,7 @@
 
  -}
 
+
 module StaticCorruptions where
 
 import Control.Concurrent.MonadIO
@@ -19,6 +20,9 @@ import ProcessIO
 
 import Data.IORef.MonadIO
 import Data.Map.Strict
+
+deleteAtIndex index list = pref ++ (drop 1 suff) 
+    where (pref,suff) = splitAt index list
 
 type PID = String
 type SID = (String, String)
@@ -73,7 +77,7 @@ execUC z p f a = do
     UC communication layout
 
      Z --- party[Pi]
-     |  /  |
+     |  X  |
      A --- F
 
    -}
@@ -82,6 +86,7 @@ execUC z p f a = do
   f2a <- newChan; a2f <- newChan
   a2z <- newChan; z2a <- newChan
   a2p <- newChan; p2a <- newChan
+  z2f <- newChan; f2z <- newChan
 
   z2exec <- newChan
   
@@ -89,21 +94,26 @@ execUC z p f a = do
     -- First, wait for the environment to choose an sid
     SttCrupt_SidCrupt sid crupt <- readChan z2exec
 
-    fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a)
+    fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
     fork $ runSID sid $ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
     fork $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
     return ()
 
-  runUntilOutput $ z z2exec (p2z, z2p) (a2z, z2a)
+  runUntilOutput $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f)
 
 data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID (Map PID ()) deriving Show
 
 data SttCruptZ2A a b = SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Show
 data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving Show
 
-wrap f c = do
+wrapWrite f c = do
   d <- newChan 
   fork $ forever $ readChan d >>= writeChan c . f 
+  return d
+
+wrapRead f c = do
+  d <- newChan
+  fork $ forever $ readChan c >>= writeChan d . f 
   return d
 
 partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
@@ -191,7 +201,7 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2A
   return ()
 
-dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
+dummyFunctionality crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   fork $ forever $ do
     (pid, m) <- readChan p2f
     --liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
@@ -204,7 +214,7 @@ dummyFunctionality crupt (p2f, f2p) (a2f, f2a) = do
 
 
 
-testEnv z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sid1","") empty
@@ -253,8 +263,8 @@ testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdvers
 lemS dS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   a2pfS <- newChan
-  a2fS <- wrap SttCruptZ2A_A2F a2pfS
-  a2pS <- wrap SttCruptZ2A_A2P a2pfS
+  a2fS <- wrapWrite SttCruptZ2A_A2F a2pfS
+  a2pS <- wrapWrite SttCruptZ2A_A2P a2pfS
 
   pf2aS <- newChan
   p2aS <- newChan
@@ -311,7 +321,7 @@ compose rho p pid (z2p, p2z) (f2p, p2f) = do
 --      on the right.
 
 
-compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   z2pid <- newIORef empty
   f2pid <- newIORef empty
@@ -325,7 +335,7 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   z2execZ <- newChan
 
   -- Fork off local instance of z, and wait to receive sid and crupt.
-  fork $ z z2execZ (p2zZ, z2pZ) (a2zZ, z2aZ) pump outp
+  fork $ z z2execZ (p2zZ, z2pZ) (a2zZ, z2aZ) (f2z, z2f) outp
   SttCrupt_SidCrupt sid crupt <- readChan z2execZ
   writeChan z2exec $ SttCrupt_SidCrupt sid crupt
 
@@ -381,7 +391,7 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) pump outp = do
 
  -}
 
-bangF f crupt (p2f, f2p) (a2f, f2a) = do
+bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
@@ -399,10 +409,10 @@ bangF f crupt (p2f, f2p) (a2f, f2a) = do
                                   writeChan f2_ (ssid, m)
                      modifyIORef _2ssid $ insert ssid _2ff
                      return (_2ff, ff2_)
-        f2p' <- wrap (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
+        f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (show (sid, fst ssid), snd ssid) $ f crupt p a
+        fork $ runSID (show (sid, fst ssid), snd ssid) $ f crupt p a undefined
         return ()
 
   let getSsid _2ssid ssid = do
@@ -473,7 +483,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
 
 {- Test cases for multisession -}
 
-testEnvMulti z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (z2f, f2z) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sid1","") empty
 
@@ -521,7 +531,7 @@ squash pid (z2p, p2z) (f2p, p2f) = do
     writeChan p2z (ssid, (sssid, m))
   return ()
 
-testEnvSquash z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+testEnvSquash z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sid1","") empty
 

@@ -1,5 +1,5 @@
  {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables
+  ScopedTypeVariables, OverlappingInstances
   
   #-} 
 
@@ -24,6 +24,7 @@ data ClockA2F = ClockA2F_GetState deriving Show
 data ClockF2A = ClockF2A_RoundOK PID | ClockF2A_State Int (Map PID Bool) deriving Show
 data ClockPeerIn  = ClockPeerIn_GetRound deriving Show
 data ClockPeerOut = ClockPeerOut_Round Int deriving Show
+
 
 
 fClock crupt (p2f, f2p) (a2f, f2a) = do
@@ -69,7 +70,7 @@ fClock crupt (p2f, f2p) (a2f, f2a) = do
   return ()
 
 
-class Monad m => MonadTimer m where
+class HasFork m => MonadTimer m where
     getRound :: m Int
 
 instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadTimer m where
@@ -89,9 +90,14 @@ runClockP p crupt (p2f, f2p) (a2f, f2a) = do
 runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
+{-
+-- Example: fSync
+      fSync is a synchronous, one-shot, authenticated communication channel.
+      The PIDs of the Sender and Receiver are encoded in the SID
+      Also encoded in the SID is a round number, r. The sender can set the message
+      until after round r. After round r, the receiver can read the message.
 
-
-
+-}
 fSync crupt (p2f, f2p) (a2f, f2a) = do
   -- Parse SID as sender, recipient, ssid
   sid <- getSID
@@ -121,6 +127,14 @@ fSync crupt (p2f, f2p) (a2f, f2a) = do
 
   return ()
 
+{-- 
+  "Preservation" of basic UC composition operators
+  The "Squash" theorem, (i.e., the JUC theorem) still applies to 
+  synchronous, runClockF-wrapped protocols.
+
+  To illustrate this, we will show how (runClockF !!fSync) can be realized from
+  (runClockF !fSync)
+ --}
 
 testEnvSquashBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
@@ -164,6 +178,36 @@ testEnvSquashBangSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   writeChan outp "environment output: 1"
 
 
+testEnvBBSSync z2exec (p2z, z2p) (a2z, z2a) pump outp = do
+  writeChan z2exec $ SttCrupt_SidCrupt ("sidTestBangBangSync","") empty
+  fork $ forever $ do
+    x <- readChan p2z
+    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    pass
+  fork $ forever $ do
+    m <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " ++ show m
+    pass
+  () <- readChan pump
+  writeChan z2p ("Alice", (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Left ClockP2F_RoundOK)))
+  () <- readChan pump
+  writeChan z2p ("Bob",   (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Left ClockP2F_RoundOK)))
+  () <- readChan pump
+  writeChan z2p ("Alice", (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Right "hello!")))
+  () <- readChan pump
+  writeChan z2p ("Alice", (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Left ClockP2F_RoundOK)))
+  () <- readChan pump
+  writeChan z2p ("Bob",   (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Left ClockP2F_RoundOK)))
+  () <- readChan pump
+  writeChan z2p ("Bob",   (("ssidY",""), (("sssidX", show ("Alice", "Bob", 0::Int, "")), DuplexP2F_Right undefined)))
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2F $ ((show (("ssidY",""), "sssidX"), show ("Alice", "Bob", 0::Int, "")), DuplexA2F_Left ClockA2F_GetState)
+
+
+  () <- readChan pump 
+  writeChan outp "environment output: 1"
+
+
 testEnvDumb z2exec (p2z, z2p) (a2z, z2a) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sidTestBangBangSync","") empty
@@ -187,10 +231,17 @@ testEnvDumb z2exec (p2z, z2p) (a2z, z2a) pump outp = do
 --  runClockP idealProtocol  ~= idealProtocol
 --  runClockS dummyAdvesrary ~= dummyAdversary
 
-
 testSquashBangIdeal :: IO String
 testSquashBangIdeal = runRand $ execUC testEnvSquashBangSync idealProtocol (runClockF $ bangF $ bangF $ fSync) (runClockS squashS)
 
 testSquashBangReal :: IO String
 testSquashBangReal = runRand $ execUC testEnvSquashBangSync (runClockP squash) (runClockF $ bangF $ fSync) dummyAdversary
+{-
+{-- This is a silly test, but it serves as a sanity check. We can apply the runClockF
+    operator in any order. runClockF(_) is a well formed functionality.  --}
+testSquashBangReal' :: IO String
+testSquashBangReal' = runRand $ execUC testEnvBBSSync squash (bangF $ runClockF $ fSync) dummyAdversary
 
+testSquashBangIdeal' :: IO String
+testSquashBangIdeal' = runRand $ execUC testEnvBBSSync idealProtocol (bangF $ bangF $ runClockF $ fSync) squashS
+-}
