@@ -10,14 +10,12 @@ module Async where
 import ProcessIO
 import StaticCorruptions
 import Duplex
+import Leak
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM_, replicateM_)
 import Control.Monad.State
 import Control.Monad.Reader
-
--- For letting the adversary permute the list
-import Data.Permute
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
@@ -32,6 +30,7 @@ data ClockF2Z = ClockF2Z_Round Int deriving Show
 data ClockZ2F = ClockZ2F_MakeProgress deriving Show
 data ClockPeerIn = ClockPeerIn_Register deriving Show
 data ClockPeerOut = ClockPeerOut_Registered CallbackID | ClockPeerOut_Callback CallbackID deriving Show
+
 
 fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
@@ -92,7 +91,7 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 class HasFork m => MonadAsync m where
-    registerCallback :: m () -> m ()
+    registerCallback :: m (Chan ())
 
 type AsyncFuncT = ReaderT (Chan (Chan ()))
 
@@ -100,12 +99,11 @@ instance MonadSID m => MonadSID (AsyncFuncT m) where
     getSID = lift getSID
 
 instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadAsync (AsyncFuncT m) where
-    registerCallback thunk = do
+    registerCallback = do
       reg :: Chan (Chan ()) <- ask
       lift $ duplexWrite ClockPeerIn_Register
       cb <- readChan reg
-      fork $ readChan cb >> thunk
-      return ()
+      return cb
 
 _runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   callbacks <- newIORef empty
@@ -126,17 +124,20 @@ _runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
                      let chan = (\(Just c)->c) $ Map.lookup cb cbMap
                      writeChan chan ()
 
-  runReaderT (f crupt (p2f, f2p) (a2f, f2a)) reg
+  z2f' <- newChan
+  f2z' <- newChan
+  runReaderT (f crupt (p2f, f2p) (a2f, f2a) (z2f', f2z')) reg
 
 runAsyncF :: (HasFork m, MonadSID m) =>
-     (t4
+     (Map PID ()
       -> (Chan (t2, t3), Chan (t, b))
-      -> (Chan a6, Chan a1)
+      -> (Chan a2f, Chan f2a)
+      -> (Chan a4, Chan a5)
       -> AsyncFuncT (DuplexT ClockPeerIn ClockPeerOut m) ())
-     -> t4
-     -> (Chan (t2, DuplexP2F t1 t3), Chan (t, DuplexF2P a b))
-     -> (Chan (DuplexA2F ClockA2F a6), Chan (DuplexF2A a2 a1))
-     -> (Chan (DuplexZ2F ClockZ2F a8), Chan (DuplexF2Z ClockF2Z a3))
+     -> Map PID ()
+     -> (Chan (t2, DuplexP2F t1 t3), Chan (t, DuplexF2P () b))
+     -> (Chan (DuplexA2F ClockA2F a2f), Chan (DuplexF2A ClockF2A f2a))
+     -> (Chan (DuplexZ2F ClockZ2F z2f), Chan (DuplexF2Z ClockF2Z f2z))
      -> m ()
 runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fClock (_runAsyncF f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
@@ -147,6 +148,7 @@ runAsyncP p crupt (z2p, p2z) (f2p, p2f) = do
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
   p crupt (z2p, p2z) (f2p', p2f')
 
+-- TODO
 --runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 --  runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
@@ -161,7 +163,7 @@ runAsyncP p crupt (z2p, p2z) (f2p, p2f) = do
 
 data FAuthF2P a = FAuthF2P_OK | FAuthF2P_Deliver a deriving (Eq, Read, Show)
 
-fAuth crupt (p2f, f2p) (a2f, f2a) = do
+fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Parse SID as sender, recipient, ssid
   sid <- getSID
   let (pidS :: PID, pidR :: PID, ssid :: String) = read $ snd sid
@@ -179,8 +181,11 @@ fAuth crupt (p2f, f2p) (a2f, f2a) = do
     else do
       writeIORef recorded True
       liftIO $ putStrLn $ "fAuth: notifying adv"
-      registerCallback $ do
-                     writeChan f2p (pidR, FAuthF2P_Deliver m)
+      leak (pid, m)
+      cb <- registerCallback
+      fork $ do
+           readChan cb
+           writeChan f2p (pidR, FAuthF2P_Deliver m)
     writeChan f2p (pidS, FAuthF2P_OK)
 
   return ()
@@ -196,7 +201,9 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     pass
   fork $ forever $ do
     m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
+    liftIO $ putStrLn $ "Z: a sent " ++ show (m :: (SttCruptA2Z
+                           (DuplexF2P () (DuplexF2P () (FAuthF2P String)))
+                           (DuplexF2A ClockF2A (DuplexF2A (LeakF2A (PID,String)) ()))))
     pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
@@ -205,7 +212,11 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Have Alice write a message
   () <- readChan pump 
-  writeChan z2p ("Alice", "hi Bob")
+  writeChan z2p ("Alice", DuplexP2F_Right "hi Bob")
+
+  -- Let the adversary see
+  () <- readChan pump 
+  writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Right $ DuplexA2F_Left $ LeakA2F_Get
 
   -- Advance to round 1
   () <- readChan pump
@@ -218,8 +229,11 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
+instance MonadAsync m => MonadAsync (LeakFuncT a m) where
+    registerCallback = lift registerCallback
+
 testAuthAsync :: IO String
-testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF fAuth) dummyAdversary
+testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF (runLeakF fAuth)) dummyAdversary
 
 {-
 testEnvDumb z2exec (p2z, z2p) (a2z, z2a) pump outp = do
