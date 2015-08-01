@@ -8,8 +8,8 @@ module CoinsAsync where
 import ProcessIO
 import StaticCorruptions
 import Duplex
-import Leak
-import Async
+import Leak    -- provides "leak" instruction
+import Async   -- provides "registerCallback", "byNextRound"
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
@@ -46,10 +46,6 @@ data LedgerP2F = LedgerP2F_Transfer Int PID
 data LedgerF2A = LedgerF2A_Transfer PID Int PID
 data LedgerF2P = LedgerF2P_Transfer PID Int
 
-byNextRound m = do
-  c <- registerCallback
-  fork $ readChan c >> m
-  return ()
 
 fLedger crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Initial allocation is encoded

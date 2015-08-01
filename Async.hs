@@ -93,6 +93,11 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 class HasFork m => MonadAsync m where
     registerCallback :: m (Chan ())
 
+byNextRound m = do
+  c <- registerCallback
+  fork $ readChan c >> m
+  return ()
+
 type AsyncFuncT = ReaderT (Chan (Chan ()))
 
 instance MonadSID m => MonadSID (AsyncFuncT m) where
