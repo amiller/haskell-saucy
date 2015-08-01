@@ -29,7 +29,7 @@ import Control.Monad.Reader
 
 import System.Random
 
-
+assert cond msg = if not cond then fail msg else return ()
 
 {- Syntax sugar for parallel composition -}
 (|||) :: HasFork m => m () -> m () -> m ()

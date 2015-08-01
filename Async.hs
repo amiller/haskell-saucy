@@ -13,7 +13,7 @@ import Duplex
 import Leak
 
 import Control.Concurrent.MonadIO
-import Control.Monad (forever, forM_, replicateM_)
+import Control.Monad (forever)
 import Control.Monad.State
 import Control.Monad.Reader
 
