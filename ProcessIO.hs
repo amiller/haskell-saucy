@@ -29,6 +29,21 @@ import Control.Monad.Reader
 
 import System.Random
 
+data Void 
+instance Show Void where
+    show = undefined
+
+{-- Simple utilities channels --}
+wrapWrite f c = do
+  d <- newChan 
+  fork $ forever $ readChan d >>= writeChan c . f 
+  return d
+
+wrapRead f c = do
+  d <- newChan
+  fork $ forever $ readChan c >>= writeChan d . f 
+  return d
+
 assert cond msg = if not cond then fail msg else return ()
 
 {- Syntax sugar for parallel composition -}
@@ -49,6 +64,7 @@ demultiplex ab a b = forever $ do
                        case x of
                          Left  y -> writeChan a y
                          Right y -> writeChan b y
+
                                                     
 {- Several monad typeclasses are useful for composing processes.
    These classes effectively just involve keeping track of special channels.

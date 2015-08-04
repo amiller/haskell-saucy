@@ -57,22 +57,24 @@ instance MonadDuplex a b m => MonadDuplex a b (SIDMonadT m) where
 
 
 -- Functionality wrapper
-{-
-runDuplexF  :: HasFork m => 
-      DuplexSentinel l2r r2l
-     -> (t5
-         -> (Chan (t2, t1), Chan (t, a))
-         -> (Chan a3, Chan a2)
-         -> ReaderT (Chan l2r, Chan r2l, DuplexSentinel l2r r2l) m ())
-     -> (t5
-         -> (Chan (t2, t3), Chan (t, b))
-         -> (Chan a4, Chan a1)
-         -> ReaderT (Chan r2l, Chan l2r, DuplexSentinel r2l l2r) m ())
-     -> t5
-     -> (Chan (t2, DuplexP2F t1 t3), Chan (t, DuplexF2P a b))
-     -> (Chan (DuplexA2F a3 a4), Chan (DuplexF2A a2 a1))
+
+runDuplexF
+  :: HasFork m =>
+        (Crupt
+      -> (Chan (PID, p2fL), Chan (PID, f2pL))
+      -> (Chan a2fL, Chan f2aL)
+      -> (Chan z2fL, Chan f2zL)
+      -> ReaderT (Chan l2r, Chan r2l, DuplexSentinel) m ())
+     -> (Crupt
+         -> (Chan (PID, p2fR), Chan (PID, f2pR))
+         -> (Chan a2fR, Chan f2aR)
+         -> (Chan z2fR, Chan f2zR)
+         -> ReaderT (Chan r2l, Chan l2r, DuplexSentinel) m ())
+     -> Crupt
+     -> (Chan (PID, DuplexP2F p2fL p2fR), Chan (PID, DuplexF2P f2pL f2pR))
+     -> (Chan (DuplexA2F a2fL a2fR), Chan (DuplexF2A f2aL f2aR))
+     -> (Chan (DuplexZ2F z2fL z2fR), Chan (DuplexF2Z f2zL f2zR))
      -> m ()
--}
 runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   p2fL <- newChan

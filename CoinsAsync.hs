@@ -46,9 +46,24 @@ data LedgerP2F = LedgerP2F_Transfer Int PID
 data LedgerF2A = LedgerF2A_Transfer PID Int PID
 data LedgerF2P = LedgerF2P_Transfer PID Int
 
+data MVCweakP2F a = MVCweakP2F_Input a
+
+fMVCweak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+  -- Set of parties is encoded in SID
+  sid <- getSID
+  let (parties :: Map PID (), ssid :: String) = read $ snd sid
+
+  -- Receive inputs from honest parties
+  fork $ forever $ do
+    (pid, MVCweakP2F_Input v) <- readChan p2f
+    assert (member pid parties) "message from external party"
+
+    
+      
+
 
 fLedger crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  -- Initial allocation is encoded
+  -- Initial allocation is encoded in SID
   sid <- getSID
   let (initialLedger :: Map PID Int, ssid :: String) = read $ snd sid
 
@@ -79,4 +94,3 @@ fLedger crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         writeChan f2p $ (pidR, LedgerF2P_Transfer pidS val)
 
     return ()
-

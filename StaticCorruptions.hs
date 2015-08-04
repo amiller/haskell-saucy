@@ -21,11 +21,14 @@ import ProcessIO
 import Data.IORef.MonadIO
 import Data.Map.Strict
 
+
 deleteAtIndex index list = pref ++ (drop 1 suff) 
     where (pref,suff) = splitAt index list
 
 type PID = String
 type SID = (String, String)
+
+type Crupt = Map PID ()
 
 class Monad m => MonadSID m where
     getSID :: m SID
@@ -101,20 +104,11 @@ execUC z p f a = do
 
   runUntilOutput $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f)
 
-data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID (Map PID ()) deriving Show
+data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID Crupt deriving Show
 
 data SttCruptZ2A a b = SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Show
 data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving Show
 
-wrapWrite f c = do
-  d <- newChan 
-  fork $ forever $ readChan d >>= writeChan c . f 
-  return d
-
-wrapRead f c = do
-  d <- newChan
-  fork $ forever $ readChan c >>= writeChan d . f 
-  return d
 
 partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
   -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
@@ -391,6 +385,18 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
  -}
 
+bangF
+  :: (MonadSID io, HasFork io) =>
+     (Crupt
+      -> (Chan (PID, p2f), Chan (PID, f2p))
+      -> (Chan a2f, Chan f2a)
+      -> (Chan Void, Chan Void)
+      -> SIDMonadT io ())
+     -> Crupt
+     -> (Chan (PID, (SID, p2f)), Chan (PID, (SID, f2p)))
+     -> (Chan (SID, a2f), Chan (SID, f2a))
+     -> (Chan Void, Chan Void)
+     -> io ()
 bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
@@ -412,7 +418,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (show (sid, fst ssid), snd ssid) $ f crupt p a undefined
+        fork $ runSID (show (sid, fst ssid), snd ssid) $ f crupt p a (undefined, undefined)
         return ()
 
   let getSsid _2ssid ssid = do
@@ -576,7 +582,7 @@ squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ do
     (pid, (ssid, (sssid, m))) <- readChan p2a
     writeChan a2z $ SttCruptA2Z_P2A (pid, ((show (ssid, fst sssid), snd sssid), m))
-    undefined
+    fail "unknown!"
 
   fork $ forever $ do
     (ssid, (sssid, m)) <- readChan f2a

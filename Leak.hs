@@ -13,6 +13,7 @@ import Duplex
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
 import Control.Monad.State (lift)
+import Control.Monad.Reader
 
 import Data.IORef.MonadIO
     
@@ -47,5 +48,17 @@ fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     buf <- readIORef buffer
     writeChan f2a (LeakF2A_Leaks buf)
 
+runLeakF
+  :: HasFork m =>
+     (Crupt
+      -> (Chan (PID, p2f), Chan (PID, f2p))
+      -> (Chan a2f, Chan f2a)
+      -> (Chan z2f, Chan f2z)
+      -> ReaderT (Chan (LeakPeerIn leak), Chan LeakPeerOut, DuplexSentinel) m ())
+     -> Crupt
+     -> (Chan (PID, DuplexP2F Void p2f), Chan (PID, DuplexF2P Void f2p))
+     -> (Chan (DuplexA2F LeakA2F a2f),   Chan (DuplexF2A (LeakF2A leak) f2a))
+     -> (Chan (DuplexZ2F Void z2f),      Chan (DuplexF2Z Void f2z))
+     -> m ()
 runLeakF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fLeak f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
