@@ -594,4 +594,8 @@ testExecSquashReal :: IO String
 testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctionality) dummyAdversary
 
 testExecSquashIdeal :: IO String
-testExecSquashIdeal = runRand $ execUC testEnvSquash idealProtocol (bangF (bangF dummyFunctionality)) squashS
+testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+-- These three are equivalent
+--testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+--testExecSquashIdeal = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+

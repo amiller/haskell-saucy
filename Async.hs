@@ -191,11 +191,17 @@ runAsyncF :: (HasFork m, MonadSID m) =>
 runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fClock (_runAsyncF f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
-runAsyncP p crupt (z2p, p2z) (f2p, p2f) = do
+runAsyncP :: HasFork m =>
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m b)
+     -> PID
+     -> (Chan z2p, Chan p2z)
+     -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
+     -> m b
+runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
   -- Asynchronous clock is transparent to parties
   p2f' <- wrapWrite DuplexP2F_Right          p2f
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
-  p crupt (z2p, p2z) (f2p', p2f')
+  p pid (z2p, p2z) (f2p', p2f')
 
 -- TODO
 --runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
@@ -291,42 +297,3 @@ instance MonadAsync m => MonadAsync (LeakFuncT a m) where
 testAuthAsync :: IO String
 testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF (runLeakF fAuth)) dummyAdversary
 
-{-
-testEnvDumb z2exec (p2z, z2p) (a2z, z2a) pump outp = do
-  -- Choose the sid and corruptions
-  writeChan z2exec $ SttCrupt_SidCrupt ("sidTestBangBangSync","") empty
-
-  fork $ forever $ do
-    x <- readChan p2z
-    liftIO $ putStrLn $ "Z: p sent " ++ show x
-    --writeChan outp ()
-    pass
-
-  fork $ forever $ do
-    m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " ++ show m
-    --writeChan outp "environment output: 1"
-    pass
-
-  () <- readChan pump 
-  writeChan outp "environment output: 1"
--}
-
--- Identities:
---  runClockP idealProtocol  ~= idealProtocol
---  runClockS dummyAdvesrary ~= dummyAdversary
-
---testSquashBangIdeal :: IO String
---testSquashBangIdeal = runRand $ execUC testEnvSquashBangSync idealProtocol (runClockF $ bangF $ bangF $ fSync) (runClockS squashS)
-
---testSquashBangReal :: IO String
---testSquashBangReal = runRand $ execUC testEnvSquashBangSync (runClockP squash) (runClockF $ bangF $ fSync) dummyAdversary
-{-
-{-- This is a silly test, but it serves as a sanity check. We can apply the runClockF
-    operator in any order. runClockF(_) is a well formed functionality.  --}
-testSquashBangReal' :: IO String
-testSquashBangReal' = runRand $ execUC testEnvBBSSync squash (bangF $ runClockF $ fSync) dummyAdversary
-
-testSquashBangIdeal' :: IO String
-testSquashBangIdeal' = runRand $ execUC testEnvBBSSync idealProtocol (bangF $ bangF $ runClockF $ fSync) squashS
--}

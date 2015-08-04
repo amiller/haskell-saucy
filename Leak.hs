@@ -62,3 +62,15 @@ runLeakF
      -> m ()
 runLeakF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fLeak f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
+
+runLeakP :: HasFork m =>
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m b)
+     -> PID
+     -> (Chan z2p, Chan p2z)
+     -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
+     -> m b
+runLeakP p pid (z2p, p2z) (f2p, p2f) = do
+  p2f' <- wrapWrite DuplexP2F_Right          p2f
+  f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
+  p pid (z2p, p2z) (f2p', p2f')
+
