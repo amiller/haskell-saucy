@@ -81,8 +81,8 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
-    x <- readChan p2z
-    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    (pid, m) <- readChan p2z
+    liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
     pass
   fork $ forever $ do
     m <- readChan a2z
@@ -97,15 +97,16 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan z2p ("Alice", (("ssidX",show ("Alice","Bob","")), "hi Bob"))
 
-  -- Let the adversary see
+  -- Let the adversary read the buffer
   () <- readChan pump 
   writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Right $ DuplexA2F_Left $ LeakA2F_Get
 
   -- Advance to round 1
+  -- Deliver 0
   () <- readChan pump
   writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
 
-  -- Advance to round 2
+  -- Deliver 1
   () <- readChan pump
   writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
 
@@ -145,12 +146,12 @@ testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP (runLeakP idealProt
 testEnvMulticast
   :: (MonadDefault m, Show a) =>
      Chan SttCrupt_SidCrupt
-     -> (Chan a, Chan (PID, (SID, [Char])))
+     -> (Chan (PID, a), Chan (PID, (SID, [Char])))
      -> (Chan (SttCruptA2Z
                            (DuplexF2P Void (DuplexF2P Void (SID, FAuthF2P (SID, [Char]))))
                            (DuplexF2A
                               ClockF2A (DuplexF2A (LeakF2A (PID, (SID, [Char]))) (SID, Void)))),
-         Chan (SttCruptZ2A a4 (DuplexA2F a5 (DuplexA2F LeakA2F b))))
+         Chan (SttCruptZ2A a4 (DuplexA2F ClockA2F (DuplexA2F LeakA2F b))))
      -> (Chan (DuplexF2Z ClockF2Z (DuplexF2Z Void Void)), 
          Chan (DuplexZ2F ClockZ2F (DuplexZ2F Void Void)))
      -> Chan ()
@@ -160,8 +161,8 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
-    x <- readChan p2z
-    liftIO $ putStrLn $ "Z: p sent " ++ show x
+    (pid, m) <- readChan p2z
+    liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
     pass
   fork $ forever $ do
     m <- readChan a2z
@@ -179,6 +180,10 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Let the adversary see
   () <- readChan pump 
   writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Right $ DuplexA2F_Left $ LeakA2F_Get
+
+  -- Optional: Adversary delivers messages out of order
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Left $ ClockA2F_Deliver 1 1
 
   -- Advance to round 1
   () <- readChan pump
