@@ -1,5 +1,5 @@
  {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
+  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses, FunctionalDependencies
   #-} 
 
 -- Allow a functionality to leak messages to the adversary
@@ -22,7 +22,7 @@ data LeakF2A a = LeakF2A_Leaks [(SID, a)] deriving Show
 data LeakPeerIn a = LeakPeerIn_Leak SID a deriving Show
 data LeakPeerOut  = LeakPeerOut_OK    deriving Show
 
-class HasFork m => MonadLeak a m where
+class HasFork m => MonadLeak a m | m -> a where
     leak :: a -> m ()
 
 type LeakFuncT a = DuplexT (LeakPeerIn a) LeakPeerOut
@@ -54,7 +54,7 @@ runLeakF
       -> (Chan (PID, p2f), Chan (PID, f2p))
       -> (Chan a2f, Chan f2a)
       -> (Chan z2f, Chan f2z)
-      -> ReaderT (Chan (LeakPeerIn leak), Chan LeakPeerOut, DuplexSentinel) m ())
+      -> DuplexT (LeakPeerIn leak) LeakPeerOut m ())
      -> Crupt
      -> (Chan (PID, DuplexP2F Void p2f), Chan (PID, DuplexF2P Void f2p))
      -> (Chan (DuplexA2F LeakA2F a2f),   Chan (DuplexF2A (LeakF2A leak) f2a))

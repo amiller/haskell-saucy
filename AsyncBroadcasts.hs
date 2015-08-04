@@ -23,7 +23,38 @@ import qualified Data.Map.Strict as Map
 {- Messages exchanged with broadcast -}
 
 data MulticastP2Z a = MulticastP2Z_OK | MulticastP2Z_Deliver a deriving Show
+data MulticastF2A a = MulticastF2A a deriving Show
 
+fMulticast :: (MonadSID m, MonadLeak (MulticastF2A t) m, MonadAsync m) =>
+     Crupt
+     -> (Chan (PID, t), Chan (PID, MulticastP2Z t))
+     -> (Chan a, Chan (MulticastF2A t))
+     -> (c, d)
+     -> m ()
+fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+  -- Sender and set of parties is encoded in SID
+  sid <- getSID
+  let (pidS :: PID, parties :: [PID], sssid :: String) = read $ snd sid
+
+  -- Only activated by the designated sender
+  fork $ forever $ do
+    (pid, m) <- readChan p2f
+    if pid == pidS then do
+        leak (MulticastF2A m)
+        forM parties $ \pidR -> do
+           byNextRound $ writeChan f2p (pidR, MulticastP2Z_Deliver m)
+    else fail "multicast activated not by sender"
+  return ()
+
+{-runLeakMulticast :: (MonadSID m, MonadAsync m) =>
+                   Crupt
+                   -> (Chan (PID, DuplexP2F Void p2f),
+                       Chan (PID, DuplexF2P Void (MulticastP2Z p2f)))
+                   -> (Chan (DuplexA2F LeakA2F a2f),
+                       Chan (DuplexF2A (LeakF2A (MulticastF2A p2f)) (MulticastF2A p2f)))
+                   -> (Chan (DuplexZ2F Void z2f), Chan (DuplexF2Z Void f2z))
+                   -> m ()-}
+--runLeakMulticast = runLeakF fMulticast
 
 {-- An !fAuth hybrid protocol --}
 protMulticast :: (MonadSID m, HasFork m) =>
@@ -65,80 +96,6 @@ protMulticast pid (z2p, p2z) (f2p, p2f) = do
       FAuthF2P_OK -> writeChan cOK ()
 
   return ()
-
-
-
-{-- Example environment using protMulticast and !fAuth --}
-
-instance (MonadAsync m => MonadAsync (SIDMonadT m)) where
-    registerCallback = lift registerCallback
-
-instance (MonadLeak a m => MonadLeak a (SIDMonadT m)) where
-    leak = lift . leak
-
-
-testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
-  writeChan z2exec $ SttCrupt_SidCrupt sid empty
-  fork $ forever $ do
-    (pid, m) <- readChan p2z
-    liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
-    pass
-  fork $ forever $ do
-    m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " ++ show m
-    pass
-  fork $ forever $ do
-    DuplexF2Z_Left f <- readChan f2z
-    liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
-
-  -- Have Alice write a message
-  () <- readChan pump 
-  writeChan z2p ("Alice", (("ssidX",show ("Alice","Bob","")), "hi Bob"))
-
-  -- Let the adversary read the buffer
-  () <- readChan pump 
-  writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Right $ DuplexA2F_Left $ LeakA2F_Get
-
-  -- Advance to round 1
-  -- Deliver 0
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
-
-  -- Deliver 1
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
-
-  () <- readChan pump 
-  writeChan outp "environment output: 1"
-
-
-leakfAuth
-  :: (MonadAsync m, MonadSID m) =>
-     Crupt
-     -> (Chan (PID, DuplexP2F Void p2f),
-         Chan (PID, DuplexF2P Void (FAuthF2P p2f)))
-     -> (Chan (DuplexA2F LeakA2F Void),
-         Chan (DuplexF2A (LeakF2A (PID, p2f)) Void))
-     -> (Chan (DuplexZ2F Void Void), Chan (DuplexF2Z Void Void))
-     -> m ()
-leakfAuth = runLeakF fAuth
-
-runLeakBangAuth
-  :: (MonadAsync m, MonadSID m) =>
-     Crupt
-     -> (Chan (PID, DuplexP2F Void (SID, p2f)),
-         Chan (PID, DuplexF2P Void (SID, FAuthF2P p2f)))
-     -> (Chan (DuplexA2F LeakA2F (SID, Void)),
-         Chan (DuplexF2A (LeakF2A (PID, p2f)) (SID, Void)))
-     -> (Chan (DuplexZ2F Void Void),
-         Chan (DuplexF2Z Void Void))
-     -> m ()
-runLeakBangAuth = runLeakF (bangF fAuth)
-
-testBangAsync :: IO String
-testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP (runLeakP idealProtocol)) (runAsyncF (runLeakBangAuth)) dummyAdversary
 
 
 
@@ -200,6 +157,8 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
-testMulticast :: IO String
-testMulticast = runRand $ execUC testEnvMulticast (runAsyncP (runLeakP protMulticast)) (runAsyncF runLeakBangAuth) dummyAdversary
+testMulticastReal :: IO String
+testMulticastReal = runRand $ execUC testEnvMulticast (runAsyncP (runLeakP protMulticast)) (runAsyncF $ runLeakF $ bangF fAuth) dummyAdversary
 
+testMulticastIdeal :: IO String
+testMulticastIdeal = runRand $ execUC undefined (runAsyncP $ runLeakP idealProtocol) (runAsyncF (runLeakF fMulticast)) undefined
