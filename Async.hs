@@ -218,7 +218,7 @@ runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
 
 data FAuthF2P a = FAuthF2P_OK | FAuthF2P_Deliver a deriving (Eq, Read, Show)
 
-fAuth :: (MonadAsync m, MonadLeak (PID, a) m, MonadSID m) =>
+fAuth :: (MonadAsync m, MonadLeak a m, MonadSID m) =>
      Map PID ()
      -> (Chan (PID, a), Chan (PID, FAuthF2P a))
      -> (Chan Void, Chan Void)
@@ -243,7 +243,7 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     else do
       writeIORef recorded True
       liftIO $ putStrLn $ "fAuth: notifying adv"
-      leak (pid, m)
+      leak m
       byNextRound $ writeChan f2p (pidR, FAuthF2P_Deliver m)
     writeChan f2p (pidS, FAuthF2P_OK)
 
@@ -262,7 +262,7 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show (m :: (SttCruptA2Z
                            (DuplexF2P Void (DuplexF2P Void (FAuthF2P String)))
-                           (DuplexF2A ClockF2A (DuplexF2A (LeakF2A (PID,String)) Void))))
+                           (DuplexF2A ClockF2A (DuplexF2A (LeakF2A String) Void))))
     pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
@@ -307,7 +307,7 @@ instance (MonadLeak a m => MonadLeak a (SIDMonadT m)) where
     leak = lift . leak
 
 testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
+  let sid = ("sidTestMulticast", "")
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
