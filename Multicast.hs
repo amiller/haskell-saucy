@@ -2,7 +2,7 @@
   ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
   #-} 
 
-module AsyncBroadcast where
+module Multicast where
 
 import ProcessIO
 import StaticCorruptions

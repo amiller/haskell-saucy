@@ -31,7 +31,7 @@ import qualified Data.Map.Strict as Map
      We therefore use a round-based model for counting events. This model is expressed in SaUCy, as a programming abstraction:
         - getRound
         - byNextRound
-        - withinNrounds
+        - withinNRounds
 
      As usual, these programming abstractions are defined as Haskell monad typeclasses, and are implemented as composition with another functionality (fClock).
 
