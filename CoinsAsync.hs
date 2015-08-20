@@ -20,15 +20,6 @@ import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
 import qualified Data.Map.Strict as Map
 
-getNbits 0 = return 0
-getNbits n | n < 0 = fail "negative bits?"
-getNbits n = do
-  b <- getBit
-  rest <- getNbits (n-1)
-  return $ 2*rest + if b then 0 else 1
-
-get32bytes :: (Num a, MonadRand m) => m a
-get32bytes = getNbits (32*8)
     
 fUnspentCoin crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Parse SID as owner, ssid

@@ -93,6 +93,16 @@ instance HasFork m => MonadRand (RandomMonadT m) where
 instance MonadRand m => MonadRand (ReaderT s m) where
     getBit = lift getBit
 
+getNbits 0 = return 0
+getNbits n | n < 0 = fail "negative bits?"
+getNbits n = do
+  b <- getBit
+  rest <- getNbits (n-1)
+  return $ 2*rest + if b then 0 else 1
+
+get32bytes :: (Num a, MonadRand m) => m a
+get32bytes = getNbits (32*8)
+
 runRand :: HasFork m => RandomMonadT m a -> m a
 runRand p = do
   ri <- newChan
