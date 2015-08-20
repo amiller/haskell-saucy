@@ -9,6 +9,8 @@ import StaticCorruptions
 import Duplex
 import Leak
 import Async
+import Multicast
+import Signature
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
@@ -80,3 +82,69 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 {- Protocol ACast -}
+
+data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE ([Maybe SignatureSig], t)
+
+splitDuplexF2P f2p = do
+  left <- newChan
+  right <- newChan
+  fork $ forever $ do
+    mf <- readChan f2p
+    case mf of
+      DuplexF2P_Left m -> writeChan left m 
+      DuplexF2P_Right m -> writeChan right m
+  return (left, right)
+
+protACast :: (MonadSID m, HasFork m) =>
+     PID
+     -> (Chan (ACastP2F t), Chan (ACastF2P t))
+     -> (Chan (DuplexF2P (SID, MulticastF2P (ACastMsg t)) (SignatureF2P t)),
+         Chan (DuplexP2F (SID, t) (SignatureP2F t)))
+     -> m ()
+protACast pid (z2p, p2z) (f2p, p2f) = do
+  -- Sender and set of parties is encoded in SID
+  sid <- getSID
+  let (pidS :: PID, parties :: [PID], t :: Int, sssid :: String) = read $ snd sid
+
+  cOK <- newChan
+
+  -- Keep trac
+  inputReceived <- newIORef False
+  echoes <- newIORef (Map.empty :: Map PID (SignatureSig, v))
+
+  -- Sender provides input
+  fork $ do
+    ACastP2F_Input m <- readChan z2p
+    assert (pid == pidS) "[protACast]: only sender provides input"
+    --multicast m
+
+  (f2p_mcast, f2p_sig) <- splitDuplexF2P f2p
+
+  -- Receive messages from multicast
+  fork $ forever $ do
+    (sid', MulticastF2P_Deliver msg) <- readChan f2p_mcast
+    let (pidS' :: PID, _ :: [PID], _ :: String) = read $ snd sid'
+    case msg of
+      ACast_VAL v -> do
+          -- Check this is the *FIRST message from the right sender
+          assert (pidS' == pidS) "[protACast]: VAL(v) from wrong sender"
+          readIORef inputReceived >>= flip assert "[protACast]: Too many inputs received" . not
+          writeIORef inputReceived True
+
+          -- Create a signature
+          sig <- undefined
+          -- Multicast ECHO(sig, v)
+          undefined
+
+      ACast_ECHO (sig, v) -> 
+          -- Check the signature using the fSignature instance for pidS'
+          --  verifySig pidS' sig v
+          -- Add this signature to a list
+          undefined
+      ACast_DECIDE (sigs, v) -> 
+          -- Check each signature
+          undefined
+    
+
+    
+  return ()
