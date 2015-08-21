@@ -11,6 +11,7 @@ import ProcessIO
 import StaticCorruptions
 import Duplex
 import Leak
+import Multisession
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
@@ -47,11 +48,15 @@ byNextRound m = do
   fork $ readChan c >> m
   return ()
 
-withinNRounds 0 m = m
-withinNRounds n m = do
-  assert (n > 0) "bad number of rounds"
+withinNRounds :: (MonadAsync m) => m () -> Integer -> m () -> m ()
+withinNRounds _ 1 m = do
   c <- registerCallback
-  fork $ readChan c >> withinNRounds (n-1) m
+  fork $ readChan c >> m
+  return ()
+withinNRounds def n m = do
+  assert (n >= 1) "withinNRounds must be called with n >= 1"
+  c <- registerCallback
+  fork $ readChan c >> withinNRounds def (n-1) m >> def
   return ()
 
 
