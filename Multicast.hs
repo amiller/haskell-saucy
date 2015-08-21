@@ -9,6 +9,7 @@ import StaticCorruptions
 import Duplex
 import Leak
 import Async
+import Multisession
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
