@@ -34,7 +34,7 @@ import qualified Data.Map.Strict as Map
 data ACastP2F a = ACastP2F_Input a deriving Show
 data ACastF2P a = ACastF2P_OK | ACastF2P_Deliver a deriving Show
 data ACastF2A a = ACastF2A_Advance deriving Show
-data ACastA2F a = ACastA2F_Deliver PID deriving Show
+--data ACastA2F a = ACastA2F_Deliver PID deriving Show
 
 assertNothing Nothing = return ()
 assertNothing _ = fail "Not nothing"
@@ -42,7 +42,7 @@ assertNothing _ = fail "Not nothing"
 fACast :: (MonadSID m, MonadLeak a m, MonadAsync m, Show a) =>
      Crupt
      -> (Chan (PID, ACastP2F a), Chan (PID, ACastF2P a))
-     -> (Chan (ACastA2F a), Chan (ACastF2A a))
+     -> (Chan Void, Chan (ACastF2A a))
      -> (Chan Void, Chan Void)
      -> m ()
 fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
@@ -65,21 +65,12 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     assert (pid == pidS) "Messages not from sender are ignored"
     readIORef value >>= assertNothing
     writeIORef value (Just m)        
-    if Map.member pidS crupt then
-        -- If sender is corrupt, no guarantees on liveness
-        return ()
-    else do
-        -- If sender is correct, every honest party outputs in 2 rounds
-        forM_ parties $ \pid' -> do
-           withinNRounds (writeChan f2a ACastF2A_Advance) 2 $ do
-             writeChan f2p (pid', ACastF2P_Deliver m)
-        writeChan f2p (pidS, ACastF2P_OK)
 
-  fork $ forever $ do
-    ACastA2F_Deliver pid <- readChan a2f
-    assert (elem pid parties) "Tried to deliver to unknown party"
-    (Just m) <- readIORef value -- implicitly assert value has already been set
-    writeChan f2p (pid, ACastF2P_Deliver m)
+    -- Every honest party outputs within 2 rounds
+    forM_ parties $ \pid' -> do
+        withinNRounds (writeChan f2a ACastF2A_Advance) 2 $ do
+           writeChan f2p (pid', ACastF2P_Deliver m)
+    writeChan f2p (pidS, ACastF2P_OK)
 
   return ()
 
