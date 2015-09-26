@@ -39,7 +39,7 @@ data ACastF2A a = ACastF2A_Advance deriving Show
 assertNothing Nothing = return ()
 assertNothing _ = fail "Not nothing"
 
-fACast :: (MonadSID m, MonadLeak a m, MonadAsync m, Show a) =>
+fACast :: (MonadSID m, MonadLeak a m, MonadAsync m) =>
      Crupt
      -> (Chan (PID, ACastP2F a), Chan (PID, ACastF2P a))
      -> (Chan Void, Chan (ACastF2A a))
@@ -61,7 +61,7 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Allow sender to choose the input
   fork $ forever $ do
     (pid, ACastP2F_Input m) <- readChan p2f
-    liftIO $ putStrLn $ "[fACast]: input read " ++ show m
+    liftIO $ putStrLn $ "[fACast]: input read " -- ++ show m
     assert (pid == pidS) "Messages not from sender are ignored"
     readIORef value >>= assertNothing
     writeIORef value (Just m)        
@@ -80,7 +80,7 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 {- Protocol ACast -}
 
-data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE ([Maybe SignatureSig], t)
+data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE ([Maybe SignatureSig], t) deriving (Show, Eq, Read)
 
 -- Give (fBang fMulticast) a nicer interface
 manyMulticast :: (HasFork m) =>
@@ -136,7 +136,7 @@ readBangAnyOrder f2p = do
 protACast :: (MonadSID m, HasFork m) =>
      PID
      -> (Chan (ACastP2F String), Chan (ACastF2P String))
-     -> (Chan (DuplexF2P (SID, MulticastF2P (ACastMsg String)) (SignatureF2P String)),
+     -> (Chan (DuplexF2P (SID, MulticastF2P (ACastMsg String)) (SignatureF2P)),
          Chan (DuplexP2F (SID, ACastMsg String) (SignatureP2F String)))
      -> m ()
 protACast pid (z2p, p2z) (f2p, p2f) = do
@@ -146,21 +146,22 @@ protACast pid (z2p, p2z) (f2p, p2f) = do
 
   cOK <- newChan
 
-  -- Keep trac
+  -- Keep track
   inputReceived <- newIORef False
   echoes <- newIORef (Map.empty :: Map PID (SignatureSig, v))
-
-  -- Sender provides input
-  fork $ do
-    ACastP2F_Input m <- readChan z2p
-    assert (pid == pidS) "[protACast]: only sender provides input"
-    --multicast m
 
   -- Prepare channels
   ((f2p_mcast, p2f_mcast), (f2p_sig, p2f_sig)) <- splitDuplexP (f2p, p2f)
   (recvC, multicastC) <- manyMulticast pid parties (f2p_mcast, p2f_mcast)
   let multicast x = writeChan multicastC x
   let recv = readChan recvC -- :: m (ACastMsg t)
+
+  -- Sender provides input
+  fork $ do
+    ACastP2F_Input m <- readChan z2p
+    assert (pid == pidS) "[protACast]: only sender provides input"
+    multicast (ACast_VAL m)
+    writeChan p2z ACastF2P_OK
 
   -- Receive messages from multicast
   fork $ forever $ do
@@ -208,18 +209,19 @@ splitDuplexP (f2p, p2f) = do
   return ((f2pL, p2fL), (f2pR, p2fR))
 
 
+
 testEnvACast
   :: (MonadDefault m) =>
      Chan SttCrupt_SidCrupt
      -> (Chan (PID, ACastF2P String), Chan (PID, ACastP2F String))
-     -> (Chan Void, Chan Void)
-     -> (Chan (DuplexF2Z ClockF2Z (DuplexF2Z Void Void)), 
-         Chan (DuplexZ2F ClockZ2F (DuplexZ2F Void Void)))
+     -> (Chan a, Chan b)
+     -> (Chan (DuplexF2Z ClockF2Z voidA),
+         Chan (DuplexZ2F ClockZ2F voidB))
      -> Chan ()
      -> Chan [Char]
      -> m ()
 testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1, ""))
+  let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid Map.empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
@@ -227,7 +229,7 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     pass
   fork $ forever $ do
     m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " ++ show m 
+    liftIO $ putStrLn $ "Z: a sent " -- ++ show m 
     pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
@@ -247,8 +249,34 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
-testACastIdeal :: IO String
+{-testACastIdeal :: IO String
 testACastIdeal = runRand $ execUC testEnvACast (runAsyncP $ runLeakP idealProtocol) (runAsyncF $ runLeakF $ fACast) voidAdversary
+-}
+instance MonadAsync m => MonadAsync (DuplexT a b m) where
+    registerCallback = lift registerCallback
 
---testACastReal :: IO String
---testACastReal = runRand $ execUC undefined (runAsyncP $ runLeakP protACast) (runAsyncF $ runLeakF $ runDuplexF (bangF fMulticast) (fSignature (undefined, undefined, undefined))) dummyAdversary
+instance MonadLeak t m => MonadLeak t (DuplexT a b m) where
+    leak = lift . leak
+
+
+ff :: (MonadSID m, MonadAsync m) => 
+            Crupt
+            -> (Chan
+                  (PID,
+                   DuplexP2F Void (DuplexP2F (SID, (ACastMsg String)) (SignatureP2F String))),
+                Chan
+                  (PID,
+                   DuplexF2P Void (DuplexF2P (SID, MulticastF2P (ACastMsg String)) SignatureF2P)))
+            -> (Chan
+                  (DuplexA2F LeakA2F (DuplexA2F (SID, MulticastA2F (ACastMsg String)) Void)),
+                Chan
+                  (DuplexF2A
+                     (LeakF2A (ACastMsg String)) (DuplexF2A (SID, MulticastF2A (ACastMsg String)) Void)))
+            -> (Chan (DuplexZ2F Void (DuplexZ2F Void Void)),
+                Chan (DuplexF2Z Void (DuplexF2Z Void Void)))
+            -> m ()
+ff = runLeakF $ runDuplexF (bangF fMulticast) (fSignature defaultSignature)
+
+testACastReal :: IO String
+testACastReal = runRand $ execUC testEnvACast (runAsyncP $ runLeakP protACast) (runAsyncF $ ff) dummyAdversary
+

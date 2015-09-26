@@ -1,5 +1,5 @@
  {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables
+  ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies
   
   #-} 
 
@@ -30,19 +30,46 @@ type SID = (String, String)
 
 type Crupt = Map PID ()
 
-class Monad m => MonadSID m where
-    getSID :: m SID
+class MonadReader SID m => MonadSID m where
 
-instance Monad m => MonadSID (ReaderT SID m) where
-    getSID = ask
+instance MonadReader SID m => MonadSID m where
 
-instance MonadSID m => MonadSID (ReaderT (Chan ()) m) where
-    getSID = lift $ getSID
+--instance Monad m => MonadSID (ReaderT SID m) where
+--    getSID = ask
+
+--instance MonadSID m => MonadSID (ReaderT (Chan ()) m) where
+--    getSID = lift $ getSID
 
 type SIDMonadT = ReaderT SID
 runSID :: Monad m => SID -> SIDMonadT m a -> m a
 runSID = flip runReaderT
 
+getSID :: MonadSID m => m SID
+getSID = ask
+
+runSIDreplace :: MonadSID m => SID -> m a -> m a
+runSIDreplace sid = local (const sid)
+
+-- Extends SID A with SID B... A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B
+extendSID :: SID -> SID -> SID
+extendSID sid (prefix, conf) = (show (sid, prefix), conf)
+
+class MonadRand m => MonadFunctionality z2f f2z a2f f2a p2f f2p m | m -> z2f f2z a2f f2a p2f f2p where
+    sendF2P :: f2p -> m ()
+    sendF2A :: f2a -> m ()
+    sendF2Z :: f2z -> m ()
+    recvP2F :: m p2f
+    recvA2F :: m a2f
+    recvZ2F :: m z2f
+
+{-class MonadRand m => MonadProtocol z2f f2z a2f f2a p2f f2p where
+    sendF2P :: f2p -> m ()
+    sendF2A :: f2a -> m ()
+    sendF2Z :: f2z -> m ()
+    recvP2F :: m p2f
+    recvA2F :: m a2f
+    recvZ2F :: m z2f
+-}
 {- Provide input () until a value is received -}
 runUntilOutput :: (MonadRand m) => Chan () -> (Chan () -> Chan a -> m ()) -> m a
 runUntilOutput dump p = do

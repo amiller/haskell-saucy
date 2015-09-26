@@ -27,12 +27,10 @@ class HasFork m => MonadLeak a m | m -> a where
 
 type LeakFuncT a = DuplexT (LeakPeerIn a) LeakPeerOut
 
-instance MonadSID m => MonadSID (LeakFuncT a m) where
-    getSID = lift getSID
-
-instance (HasFork m, MonadSID m) => MonadLeak a (DuplexT (LeakPeerIn a) LeakPeerOut m) where
+instance (HasFork m, MonadSID m) => MonadLeak a (LeakFuncT a m) where
     leak a = do
-      sid <- getSID
+      sid <- lift getSID
+      liftIO $ putStrLn $ "leak:" ++ show sid
       duplexWrite (LeakPeerIn_Leak sid a)
       LeakPeerOut_OK <- duplexRead
       return ()
@@ -41,6 +39,7 @@ fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   buffer <- newIORef []
   fork $ forever $ do
     LeakPeerIn_Leak sid a <- duplexRead
+    liftIO $ putStrLn $ "[fLeak]: " ++ show sid
     modifyIORef buffer ((sid,a):)
     duplexWrite LeakPeerOut_OK
   forever $ do
@@ -49,12 +48,12 @@ fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     writeChan f2a (LeakF2A_Leaks buf)
 
 runLeakF
-  :: HasFork m =>
+  :: (MonadSID m, HasFork m) =>
      (Crupt
       -> (Chan (PID, p2f), Chan (PID, f2p))
       -> (Chan a2f, Chan f2a)
       -> (Chan z2f, Chan f2z)
-      -> DuplexT (LeakPeerIn leak) LeakPeerOut m ())
+      -> DuplexT (LeakPeerIn leak) LeakPeerOut (SIDMonadT m) ())
      -> Crupt
      -> (Chan (PID, DuplexP2F Void p2f), Chan (PID, DuplexF2P Void f2p))
      -> (Chan (DuplexA2F LeakA2F a2f),   Chan (DuplexF2A (LeakF2A leak) f2a))
@@ -63,8 +62,8 @@ runLeakF
 runLeakF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fLeak f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
-runLeakP :: HasFork m =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m b)
+runLeakP :: (MonadSID m, HasFork m) =>
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m b)
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
@@ -72,5 +71,10 @@ runLeakP :: HasFork m =>
 runLeakP p pid (z2p, p2z) (f2p, p2f) = do
   p2f' <- wrapWrite DuplexP2F_Right          p2f
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
-  p pid (z2p, p2z) (f2p', p2f')
+
+  sid <- getSID
+  let (_ :: SID, rightSID' :: SID) = read $ snd sid
+  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+
+  runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
 

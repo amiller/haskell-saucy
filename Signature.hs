@@ -104,18 +104,34 @@ type SignatureSig = String
 
 data SignatureP2F a = SignatureP2F_Sign a |
                       SignatureP2F_Verify a SignatureSig deriving Show
-data SignatureF2P sig = SignatureF2P_OK | 
-                        SignatureF2P_Sig SignatureSig |
-                        SignatureF2P_Verify Bool deriving Show
-
+data SignatureF2P = SignatureF2P_OK | 
+                    SignatureF2P_Sig SignatureSig |
+                    SignatureF2P_Verify Bool deriving Show
+                                                                        
 --data SignatureF2A a = SignatureF2A a deriving Show
 --data SignatureA2F a = SignatureA2F_Deliver PID deriving Show
 
+defaultSignature :: HasFork m => 
+     (m (SignatureSK, SignaturePK),
+      SignatureSK -> String -> m SignatureSig,
+      SignaturePK -> String -> SignatureSig -> Bool)
+defaultSignature = (gen, sign, verify) where
+    gen = return ("SK", "PK")
+    sign sk m = return "DEFAULTSIG"
+      -- rnd :: Integer <- get32bytes
+      -- return $ "DEFAULTSIG:" ++ show rnd
+    verify pk m sig = True
 
-defaultSignature :: MonadRand m => m String
-defaultSignature = do
-  rnd :: Integer <- get32bytes
-  return $ "DEFAULTSIG:" ++ show rnd
+
+fSignature :: (MonadSID m, HasFork m) =>
+     (m (SignatureSK, SignaturePK),
+      SignatureSK -> String -> m SignatureSig,
+      SignaturePK -> String -> SignatureSig -> Bool)
+     -> Crupt
+     -> (Chan (PID, SignatureP2F String), Chan (PID, SignatureF2P))
+     -> (Chan Void, Chan Void)
+     -> (Chan Void, Chan Void)
+     -> m ()
 
 fSignature (keygen, sign, verify) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Functions are a parameter here
@@ -187,7 +203,7 @@ testEnvSig z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     pass
   fork $ forever $ do
     m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " ++ show (m :: SttCruptA2Z (SignatureF2P String) Void)
+    liftIO $ putStrLn $ "Z: a sent " ++ show (m :: SttCruptA2Z (SignatureF2P) Void)
     pass
   fork $ forever $ do
     f <- readChan f2z

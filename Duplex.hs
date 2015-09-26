@@ -8,6 +8,7 @@ module Duplex where
 
 import StaticCorruptions
 import ProcessIO
+import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM_, replicateM_)
@@ -45,29 +46,27 @@ instance HasFork m => MonadDuplex a b (DuplexT a b m) where
     duplexWrite a = ask >>= \(c, _) -> writeChan c a
     duplexRead    = ask >>= \(_, c) -> readChan c
 
-instance MonadSID m => MonadSID (DuplexT a b m) where
-    getSID = lift getSID
+--instance MonadSID m => MonadSID (DuplexT a b m) where
+--    getSID = lift getSID
 
-
-instance MonadDuplex a b m => MonadDuplex a b (SIDMonadT m) where
-    duplexWrite = lift . duplexWrite
-    duplexRead  = lift $ duplexRead
-
+--instance MonadDuplex a b m => MonadDuplex a b (SIDMonadT m) where
+--    duplexWrite = lift . duplexWrite
+--    duplexRead  = lift $ duplexRead
 
 -- Functionality wrapper
 
 runDuplexF
-  :: HasFork m =>
+  :: (MonadSID m, HasFork m) =>
         (Crupt
       -> (Chan (PID, p2fL), Chan (PID, f2pL))
       -> (Chan a2fL, Chan f2aL)
       -> (Chan z2fL, Chan f2zL)
-      -> ReaderT (Chan l2r, Chan r2l) m ())
+      -> ReaderT (Chan l2r, Chan r2l) (SIDMonadT m) ())
      -> (Crupt
          -> (Chan (PID, p2fR), Chan (PID, f2pR))
          -> (Chan a2fR, Chan f2aR)
          -> (Chan z2fR, Chan f2zR)
-         -> ReaderT (Chan r2l, Chan l2r) m ())
+         -> ReaderT (Chan r2l, Chan l2r) (SIDMonadT m) ())
      -> Crupt
      -> (Chan (PID, DuplexP2F p2fL p2fR), Chan (PID, DuplexF2P f2pL f2pR))
      -> (Chan (DuplexA2F a2fL a2fR), Chan (DuplexF2A f2aL f2aR))
@@ -112,9 +111,20 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   l2r <- newChan
   r2l <- newChan
 
-  fork $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
-  fork $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
+  sid <- getSID
+  liftIO $ putStrLn $ "[runDuplexF] " ++ show sid
+  let (leftSID' :: SID, rightSID' :: SID) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
+  let  leftSID = leftSID' -- extendSID (extendSID sid ("", "DuplexLeft"))  leftSID'
+  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+
+  fork $ runSID  sid $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
+  fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
   return ()
+
+
+
+{-- Duplex *protocols* 
+ --}
 
 
 runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
@@ -141,8 +151,13 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
   l2r <- newChan
   r2l <- newChan
 
-  fork $ flip runReaderT (l2r, r2l) $ pL pid (z2pL, p2zL) (f2pL, p2fL)
-  fork $ flip runReaderT (r2l, l2r) $ pR pid (z2pR, p2zR) (f2pR, p2fR)
+  sid <- getSID
+  let (leftSID' :: SID, rightSID' :: SID) = readNote "duplexP" $ snd sid
+  let  leftSID = extendSID (extendSID sid ("", "DuplexLeft"))  leftSID'
+  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+
+  fork $ runSID  leftSID $ flip runReaderT (l2r, r2l) $ pL pid (z2pL, p2zL) (f2pL, p2fL)
+  fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ pR pid (z2pR, p2zR) (f2pR, p2fR)
   return ()
 
 

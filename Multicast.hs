@@ -30,7 +30,7 @@ fMulticast :: (MonadSID m, MonadLeak t m, MonadAsync m) =>
      Crupt
      -> (Chan (PID, t), Chan (PID, MulticastF2P t))
      -> (Chan (MulticastA2F t), Chan (MulticastF2A t))
-     -> (c, d)
+     -> (Chan Void, Chan Void)
      -> m ()
 fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Sender and set of parties is encoded in SID

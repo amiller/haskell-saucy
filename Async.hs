@@ -1,6 +1,5 @@
  {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
   ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
-  
   #-} 
 
 
@@ -13,6 +12,7 @@ import Duplex
 import Leak
 import Multisession
 
+import Safe
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
 import Control.Monad.State
@@ -149,8 +149,15 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
  --}
 type AsyncFuncT = ReaderT (Chan (Chan ()))
 
-instance MonadSID m => MonadSID (AsyncFuncT m) where
-    getSID = lift getSID
+--instance Monad m => MonadReader SID (ReaderT SID m) where
+
+instance MonadReader a m => MonadReader a (ReaderT b m) where
+    ask = lift ask
+    local f m = undefined --lift (local f (lift m))
+--    getSID = lift getSID
+
+--instance MonadSID m => MonadSID (AsyncFuncT m) where
+--    getSID = getSID
 
 instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadAsync (AsyncFuncT m) where
     registerCallback = do
@@ -187,7 +194,7 @@ runAsyncF :: (HasFork m, MonadSID m) =>
       -> (Chan (PID, t3), Chan (PID, b))
       -> (Chan a2f, Chan f2a)
       -> (Chan z2f, Chan f2z)
-      -> AsyncFuncT (DuplexT ClockPeerIn ClockPeerOut m) ())
+      -> AsyncFuncT (DuplexT ClockPeerIn ClockPeerOut (SIDMonadT m)) ())
      -> Map PID ()
      -> (Chan (PID, DuplexP2F Void t3), Chan (PID, DuplexF2P Void b))
      -> (Chan (DuplexA2F ClockA2F a2f), Chan (DuplexF2A ClockF2A f2a))
@@ -196,8 +203,8 @@ runAsyncF :: (HasFork m, MonadSID m) =>
 runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fClock (_runAsyncF f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
-runAsyncP :: HasFork m =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m b)
+runAsyncP :: (MonadSID m, HasFork m) =>
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m b)
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
@@ -206,11 +213,12 @@ runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
   -- Asynchronous clock is transparent to parties
   p2f' <- wrapWrite DuplexP2F_Right          p2f
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
-  p pid (z2p, p2z) (f2p', p2f')
 
--- TODO
---runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
---  runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
+  sid <- getSID
+  let (_ :: SID, rightSID' :: SID) = readNote "runAsyncP" $ snd sid
+  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+
+  runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
 
 {-
 -- Example: fAuth
@@ -232,14 +240,14 @@ fAuth :: (MonadAsync m, MonadLeak a m, MonadSID m) =>
 fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Parse SID as sender, recipient, ssid
   sid <- getSID
-  liftIO $ putStrLn $ "[fAuth]:"
-  let (pidS :: PID, pidR :: PID, ssid :: String) = read $ snd sid
+  let (pidS :: PID, pidR :: PID, ssid :: String) = readNote "fAuth" $ snd sid 
 
   -- Store an optional message
   recorded <- newIORef False
 
   fork $ forever $ do
     (pid, m) <- readChan p2f
+    liftIO $ putStrLn $ "[fAuth sid]: " ++ show sid
     liftIO $ putStrLn $ "[fAuth] message received" ++ show (pidS, pidR, ssid)
 
     -- Sender can only send message once
@@ -257,7 +265,9 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 {-- Example environment using fAuth --}
 
 testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestAuthAsync", show ("Alice", "Bob", ""))
+  let voidSID = ("","")
+  let leftVoid sid = (voidSID, sid)
+  let sid = ("sidTestAuthAsync", show $ leftVoid ("", show $ leftVoid ("", show ("Alice", "Bob", ""))))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     x <- readChan p2z
@@ -312,7 +322,10 @@ instance (MonadLeak a m => MonadLeak a (SIDMonadT m)) where
     leak = lift . leak
 
 testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestMulticast", "")
+  let voidSID = ("","")
+  let leftVoid sid = (voidSID, sid)
+  let sid = ("sidTestMulticast", show $ leftVoid voidSID)
+  let sid = ("sidTestAuthAsync", show $ leftVoid ("", show $ leftVoid voidSID))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
@@ -328,8 +341,11 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     pass
 
   -- Have Alice write a message
-  () <- readChan pump 
-  writeChan z2p ("Alice", (("ssidX",show ("Alice","Bob","")), "hi Bob"))
+  () <- readChan pump
+  --
+  --let voidLeft sid = ("", show (voidSID, sid))
+  --let sid' = voidLeft $ voidLeft $ ("ssidX", show ("Alice","Bob",""))
+  writeChan z2p ("Alice", (("ssidX", show ("Alice","Bob","")), "hi Bob"))
 
   -- Let the adversary read the buffer
   () <- readChan pump 
@@ -350,3 +366,8 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
 testBangAsync :: IO String
 testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP $ runLeakP idealProtocol) (runAsyncF $ runLeakF $ bangF fAuth) dummyAdversary
+
+
+-- TODO: A modular simulator
+--runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+--  runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
