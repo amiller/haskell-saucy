@@ -23,6 +23,8 @@ import qualified Data.Map.Strict as Map
 
 {- fMulticast: a multicast functionality -}
 
+forMseq_ xs f = sequence_ $ map f xs
+
 data MulticastF2P a = MulticastF2P_OK | MulticastF2P_Deliver a deriving Show
 data MulticastF2A a = MulticastF2A a deriving Show
 data MulticastA2F a = MulticastA2F_Deliver PID a deriving Show
@@ -46,9 +48,10 @@ fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
       fork $ forever $ do
         (pid, m) <- readChan p2f
         if pid == pidS then do
-          leak m
           liftIO $ putStrLn $ "fMulticast: PARTIES " ++ show parties
-          forM parties $ \pidR -> do
+          leak m
+          liftIO $ putStrLn $ "fMulticast: LEAK DONE"
+          forMseq_ parties $ \pidR -> do
              byNextRound $ writeChan f2p (pidR, MulticastF2P_Deliver m)
           writeChan f2p (pidS, MulticastF2P_OK)
         else fail "multicast activated not by sender"
@@ -84,7 +87,7 @@ protMulticast pid (z2p, p2z) (f2p, p2f) = do
     m <- readChan z2p
     if pid == pidS then do
         liftIO $ putStrLn $ "protMulticast: PARTIES " ++ show parties
-        forM parties $ \pidR -> do
+        forMseq_ parties $ \pidR -> do
           -- Send m to each party, through a separate functionality
           let ssid' = ("", show (pid, pidR, ""))
           writeChan p2f (ssid', m)

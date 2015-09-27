@@ -28,15 +28,53 @@ class HasFork m => MonadLeak a m | m -> a where
 
 type LeakFuncT a = DuplexT (LeakPeerIn a) LeakPeerOut
 
+{-
 instance (HasFork m, MonadReader (Chan (LeakPeerIn a), Chan LeakPeerOut) m, MonadSID m) => MonadLeak a m where --(LeakFuncT a m) where
     leak a = do
-      sid <- getSID --lift getSID
+      sid <- getSID
       liftIO $ putStrLn $ "leak:" ++ show sid
-      ask >>= return . fst >>= \dW -> writeChan dW $ (LeakPeerIn_Leak sid a)
-      ask >>= return . snd >>= \dR -> readChan dR >>= \LeakPeerOut_OK -> return ()
-      --duplexWrite (LeakPeerIn_Leak sid a)
-      --LeakPeerOut_OK <- duplexRead
+      (dW,dR) <- ask
+      writeChan dW (LeakPeerIn_Leak sid a)
+      LeakPeerOut_OK <- readChan dR
+      liftIO $ putStrLn $ "leak: leak done"
       return ()
+-}
+
+instance (HasFork m, MonadReader (Chan (LeakPeerIn a), Chan LeakPeerOut) m, MonadSID m) => MonadLeak a m where --(LeakFuncT a m) where
+    leak a = do
+      sid <- getSID
+      liftIO $ putStrLn $ "leak:" ++ show sid
+      (dW,dR) <- ask
+      writeChan dW (LeakPeerIn_Leak sid a)
+      LeakPeerOut_OK <- readChan dR
+      liftIO $ putStrLn $ "leak: leak done"
+      return ()
+{-
+instance (HasFork m) => MonadLeak a (SIDMonadT (LeakFuncT a m)) where
+    leak a = do
+      sid <- getSID
+      liftIO $ putStrLn $ "leak:" ++ show sid
+      --(dW,dR) <- ask
+      --writeChan dW (LeakPeerIn_Leak sid a)
+      --LeakPeerOut_OK <- readChan dR
+      lift $ duplexWrite (LeakPeerIn_Leak sid a)
+      LeakPeerOut_OK <- lift duplexRead
+      liftIO $ putStrLn $ "leak: leak done"
+      return ()
+-}
+{-
+instance (HasFork m) => MonadLeak a (LeakFuncT a (SIDMonadT m)) where
+    leak a = do
+      sid <- lift getSID
+      liftIO $ putStrLn $ "leak:" ++ show sid
+      --(dW,dR) <- ask
+      --writeChan dW (LeakPeerIn_Leak sid a)
+      --LeakPeerOut_OK <- readChan dR
+      duplexWrite (LeakPeerIn_Leak sid a)
+      LeakPeerOut_OK <- duplexRead
+      liftIO $ putStrLn $ "leak: leak done"
+      return ()
+-}
 
 fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   buffer <- newIORef []

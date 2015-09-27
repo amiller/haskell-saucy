@@ -12,6 +12,7 @@ import Async
 import Multisession
 import Multicast
 import Signature
+import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
@@ -67,7 +68,7 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     writeIORef value (Just m)        
 
     -- Every honest party outputs within 2 rounds
-    forM_ parties $ \pid' -> do
+    forMseq_ parties $ \pid' -> do
         withinNRounds (writeChan f2a ACastF2A_Advance) 2 $ do
            writeChan f2p (pid', ACastF2P_Deliver m)
     writeChan f2p (pidS, ACastF2P_OK)
@@ -86,41 +87,42 @@ data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE ([Ma
 manyMulticast :: (HasFork m) =>
      PID -> [PID]
      -> (Chan (SID, (MulticastF2P t)), Chan (SID, t))
-     -> m (Chan (PID, t), Chan t)
+     -> m (Chan (PID, t), Chan t, Chan ())
 manyMulticast pid parties (f2p, p2f) = do
   p2f' <- newChan
   f2p' <- newChan
   cOK <- newChan
 
   -- Handle writing
-  fork $ forever $ do
-    forM_  [0..] $ \(ctr :: Integer) -> do
-       m <-readChan p2f'
+  fork $ sequence_ $ flip map [0..] $ \(ctr :: Integer) -> do
+       m <- readChan p2f'
+       liftIO $ putStrLn $ "[manyMulticast]: read p2f'" -- ++ show m
        let ssid = (show ctr, show (pid, parties, ""))
        writeChan p2f (ssid, m)
-       readChan cOK
 
   -- Handle reading (messages delivered in any order)
   fork $ forever $ do
     (ssid, mf) <- readChan f2p
-    let (pidS :: PID, _ :: [PID], _ :: String) = read $ snd ssid
+    liftIO $ putStrLn $ "[manyMulticast]: read f2p"
+    undefined
+    let (pidS :: PID, _ :: [PID], _ :: String) = readNote "manyMulti" $ snd ssid
     case mf of
       MulticastF2P_OK -> do
                      assert (pidS == pid) "ok delivered to wrong pid"
                      writeChan cOK ()
       MulticastF2P_Deliver m -> do
                      writeChan f2p' (pid, m)
-  return (f2p', p2f')
+  return (f2p', p2f', cOK)
 
 readBangMulticast pid parties f2p = do
   c <- newChan
   fork $ forever $ do
-    forM_ [0..] 
+    forMseq_ [0..] 
 
 writeBangSequential p2f = do
   c <- newChan
   fork $ do
-    forM_  [0..] $ \(ctr :: Integer) -> do
+    forMseq_ [0..] $ \(ctr :: Integer) -> do
         m <- readChan c
         let ssid' = ("", show ctr)
         writeChan p2f (ssid', m)
@@ -149,18 +151,22 @@ protACast pid (z2p, p2z) (f2p, p2f) = do
   -- Keep track
   inputReceived <- newIORef False
   echoes <- newIORef (Map.empty :: Map PID (SignatureSig, v))
-
+  
   -- Prepare channels
   ((f2p_mcast, p2f_mcast), (f2p_sig, p2f_sig)) <- splitDuplexP (f2p, p2f)
-  (recvC, multicastC) <- manyMulticast pid parties (f2p_mcast, p2f_mcast)
-  let multicast x = writeChan multicastC x
+  (recvC, multicastC, cOK) <- manyMulticast pid parties (f2p_mcast, p2f_mcast)
+  let multicast x = do
+        writeChan multicastC x 
+        readChan cOK
   let recv = readChan recvC -- :: m (ACastMsg t)
 
   -- Sender provides input
   fork $ do
     ACastP2F_Input m <- readChan z2p
+    liftIO $ putStrLn $ "Step 1"
     assert (pid == pidS) "[protACast]: only sender provides input"
     multicast (ACast_VAL m)
+    liftIO $ putStrLn $ "[protACast]: multicast done"
     writeChan p2z ACastF2P_OK
 
   -- Receive messages from multicast
@@ -221,7 +227,8 @@ testEnvACast
      -> Chan [Char]
      -> m ()
 testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
+  let extendRight conf = show ("", conf)
+  let sid = ("sidTestACast", extendRight $ extendRight $ show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid Map.empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
@@ -241,7 +248,7 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   writeChan z2p ("Alice", ACastP2F_Input "I'm Alice")
 
   -- Advance to round 1
-  forM_ [1..12 :: Integer] $ const $ do
+  forMseq_ [1..12 :: Integer] $ const $ do
                  () <- readChan pump
                  --liftIO $ putStrLn "[testEnvACast]: read pump"
                  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
@@ -249,16 +256,16 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
-{-testACastIdeal :: IO String
+testACastIdeal :: IO String
 testACastIdeal = runRand $ execUC testEnvACast (runAsyncP $ runLeakP idealProtocol) (runAsyncF $ runLeakF $ fACast) voidAdversary
--}
-instance MonadAsync m => MonadAsync (DuplexT a b m) where
-    registerCallback = lift registerCallback
 
-instance MonadLeak t m => MonadLeak t (DuplexT a b m) where
-    leak = lift . leak
+--instance MonadAsync m => MonadAsync (DuplexT a b m) where
+--    registerCallback = lift registerCallback
 
+--instance MonadLeak t m => MonadLeak t (DuplexT a b m) where
+--    leak = lift . leak
 
+{-
 ff :: (MonadSID m, MonadAsync m) => 
             Crupt
             -> (Chan
@@ -276,7 +283,13 @@ ff :: (MonadSID m, MonadAsync m) =>
                 Chan (DuplexF2Z Void (DuplexF2Z Void Void)))
             -> m ()
 ff = runLeakF $ runDuplexF (bangF fMulticast) (fSignature defaultSignature)
+-}
 
 testACastReal :: IO String
-testACastReal = runRand $ execUC testEnvACast (runAsyncP $ runLeakP protACast) (runAsyncF $ ff) dummyAdversary
-
+testACastReal = runRand $ execUC 
+  testEnvACast 
+  (runAsyncP $ runLeakP protACast) 
+  (runAsyncF $ runLeakF $ runDuplexF 
+                 (bangF fMulticast) 
+                 (fSignature defaultSignature)) 
+  dummyAdversary

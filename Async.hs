@@ -158,11 +158,18 @@ instance MonadReader a m => MonadReader a (ReaderT b m) where
 
 --instance MonadSID m => MonadSID (AsyncFuncT m) where
 --    getSID = getSID
-
+{-
 instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadAsync (AsyncFuncT m) where
     registerCallback = do
       reg :: Chan (Chan ()) <- ask
       lift $ duplexWrite ClockPeerIn_Register
+      cb <- readChan reg
+      return cb
+-}
+instance (MonadReader (Chan (Chan ())) m, MonadDuplex ClockPeerIn ClockPeerOut m) => MonadAsync m where
+    registerCallback = do
+      reg :: Chan (Chan ()) <- ask
+      duplexWrite ClockPeerIn_Register
       cb <- readChan reg
       return cb
 
@@ -300,8 +307,9 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
-instance MonadAsync m => MonadAsync (LeakFuncT a m) where
-    registerCallback = lift registerCallback
+
+--instance MonadAsync m => MonadAsync (LeakFuncT a m) where
+--    registerCallback = lift registerCallback
 
 testAuthAsync :: IO String
 testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF $ runLeakF fAuth) dummyAdversary

@@ -42,7 +42,11 @@ class HasFork m => MonadDuplex a b m | m -> a b where
 
 type DuplexT a b = ReaderT (Chan a, Chan b)
 
-instance HasFork m => MonadDuplex a b (DuplexT a b m) where
+--instance HasFork m => MonadDuplex a b (DuplexT a b m) where
+--    duplexWrite a = ask >>= \(c, _) -> writeChan c a
+--    duplexRead    = ask >>= \(_, c) -> readChan c
+
+instance (HasFork m, MonadReader (Chan a, Chan b) m) => MonadDuplex a b m where
     duplexWrite a = ask >>= \(c, _) -> writeChan c a
     duplexRead    = ask >>= \(_, c) -> readChan c
 
@@ -116,10 +120,9 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   let  leftSID = extendSID sid "DuplexLeft"   leftConf
   let rightSID = extendSID sid "DuplexRight" rightConf
 
-  fork $ runSID  sid $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
+  fork $ runSID leftSID $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
   fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
   return ()
-
 
 
 {-- Duplex *protocols* 
