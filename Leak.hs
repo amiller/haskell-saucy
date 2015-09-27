@@ -9,6 +9,7 @@ module Leak where
 import ProcessIO
 import StaticCorruptions
 import Duplex
+import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
@@ -27,12 +28,14 @@ class HasFork m => MonadLeak a m | m -> a where
 
 type LeakFuncT a = DuplexT (LeakPeerIn a) LeakPeerOut
 
-instance (HasFork m, MonadSID m) => MonadLeak a (LeakFuncT a m) where
+instance (HasFork m, MonadReader (Chan (LeakPeerIn a), Chan LeakPeerOut) m, MonadSID m) => MonadLeak a m where --(LeakFuncT a m) where
     leak a = do
-      sid <- lift getSID
+      sid <- getSID --lift getSID
       liftIO $ putStrLn $ "leak:" ++ show sid
-      duplexWrite (LeakPeerIn_Leak sid a)
-      LeakPeerOut_OK <- duplexRead
+      ask >>= return . fst >>= \dW -> writeChan dW $ (LeakPeerIn_Leak sid a)
+      ask >>= return . snd >>= \dR -> readChan dR >>= \LeakPeerOut_OK -> return ()
+      --duplexWrite (LeakPeerIn_Leak sid a)
+      --LeakPeerOut_OK <- duplexRead
       return ()
 
 fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
@@ -40,7 +43,7 @@ fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   fork $ forever $ do
     LeakPeerIn_Leak sid a <- duplexRead
     liftIO $ putStrLn $ "[fLeak]: " ++ show sid
-    modifyIORef buffer ((sid,a):)
+    modifyIORef buffer (++ [(sid,a)])
     duplexWrite LeakPeerOut_OK
   forever $ do
     LeakA2F_Get <- readChan a2f
@@ -69,12 +72,14 @@ runLeakP :: (MonadSID m, HasFork m) =>
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
      -> m b
 runLeakP p pid (z2p, p2z) (f2p, p2f) = do
+  -- `runLeakF f` does not change the "f2p" interface compared to `f`, 
+  -- except for adding a layer of DuplexRight wrapping/unwrapping
   p2f' <- wrapWrite DuplexP2F_Right          p2f
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
 
   sid <- getSID
-  let (_ :: SID, rightSID' :: SID) = read $ snd sid
-  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+  let (_ :: String, rightConf :: String) = readNote ("runLeakP:" ++ show (snd sid)) $ snd sid
+  let rightSID = extendSID sid "DuplexRight" rightConf
 
   runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
 

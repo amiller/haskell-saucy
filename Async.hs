@@ -215,9 +215,8 @@ runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
   f2p' <- wrapRead (\(DuplexF2P_Right m)->m) f2p
 
   sid <- getSID
-  let (_ :: SID, rightSID' :: SID) = readNote "runAsyncP" $ snd sid
-  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
-
+  let (leftConf :: String, rightConf :: String) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
+  let rightSID = extendSID sid "DuplexRight" rightConf
   runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
 
 {-
@@ -265,9 +264,7 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 {-- Example environment using fAuth --}
 
 testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let voidSID = ("","")
-  let leftVoid sid = (voidSID, sid)
-  let sid = ("sidTestAuthAsync", show $ leftVoid ("", show $ leftVoid ("", show ("Alice", "Bob", ""))))
+  let sid = ("sidTestAuthAsync", show ("", show ("", show ("Alice", "Bob", ""))))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     x <- readChan p2z
@@ -318,14 +315,13 @@ testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (run
 instance (MonadAsync m => MonadAsync (SIDMonadT m)) where
     registerCallback = lift registerCallback
 
-instance (MonadLeak a m => MonadLeak a (SIDMonadT m)) where
-    leak = lift . leak
+--instance (MonadLeak (SID, a) m => MonadLeak a (SIDMonadT m)) where
+--    leak x = do
+--      sid <- getSID
+--      lift (leak (sid, x))
 
 testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let voidSID = ("","")
-  let leftVoid sid = (voidSID, sid)
-  let sid = ("sidTestMulticast", show $ leftVoid voidSID)
-  let sid = ("sidTestAuthAsync", show $ leftVoid ("", show $ leftVoid voidSID))
+  let sid = ("sidTestAuthAsync", show ("", (show ("", ""))))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
@@ -371,3 +367,6 @@ testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP $ runLeakP idealPro
 -- TODO: A modular simulator
 --runClockS s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 --  runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
+
+
+

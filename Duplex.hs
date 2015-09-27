@@ -112,10 +112,9 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   r2l <- newChan
 
   sid <- getSID
-  liftIO $ putStrLn $ "[runDuplexF] " ++ show sid
-  let (leftSID' :: SID, rightSID' :: SID) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
-  let  leftSID = leftSID' -- extendSID (extendSID sid ("", "DuplexLeft"))  leftSID'
-  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+  let (leftConf :: String, rightConf :: String) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
+  let  leftSID = extendSID sid "DuplexLeft"   leftConf
+  let rightSID = extendSID sid "DuplexRight" rightConf
 
   fork $ runSID  sid $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
   fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
@@ -151,10 +150,11 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
   l2r <- newChan
   r2l <- newChan
 
+
   sid <- getSID
-  let (leftSID' :: SID, rightSID' :: SID) = readNote "duplexP" $ snd sid
-  let  leftSID = extendSID (extendSID sid ("", "DuplexLeft"))  leftSID'
-  let rightSID = extendSID (extendSID sid ("","DuplexRight")) rightSID'
+  let (leftConf :: String, rightConf :: String) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
+  let  leftSID = extendSID sid "DuplexLeft"   leftConf
+  let rightSID = extendSID sid "DuplexRight" rightConf
 
   fork $ runSID  leftSID $ flip runReaderT (l2r, r2l) $ pL pid (z2pL, p2zL) (f2pL, p2fL)
   fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ pR pid (z2pR, p2zR) (f2pR, p2fR)

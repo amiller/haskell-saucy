@@ -30,8 +30,12 @@ type SID = (String, String)
 
 type Crupt = Map PID ()
 
+{----------------
+ -- Session IDs
+ --  tag:  a unique string, based on the callgraph of protocols/functionalities
+ --  conf: a string containing configuration parameters
+ ----------------}
 class MonadReader SID m => MonadSID m where
-
 instance MonadReader SID m => MonadSID m where
 
 --instance Monad m => MonadSID (ReaderT SID m) where
@@ -50,26 +54,12 @@ getSID = ask
 runSIDreplace :: MonadSID m => SID -> m a -> m a
 runSIDreplace sid = local (const sid)
 
--- Extends SID A with SID B... A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B
-extendSID :: SID -> SID -> SID
-extendSID sid (prefix, conf) = (show (sid, prefix), conf)
+-- Extends SID A with SID B... 
+-- A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B
+extendSID :: SID -> String -> String -> SID
+--extendSID sid (tag, conf) = (show (sid, tag), conf)
+extendSID sid tag conf = (show (fst sid, tag), conf) -- This version drops the prior config
 
-class MonadRand m => MonadFunctionality z2f f2z a2f f2a p2f f2p m | m -> z2f f2z a2f f2a p2f f2p where
-    sendF2P :: f2p -> m ()
-    sendF2A :: f2a -> m ()
-    sendF2Z :: f2z -> m ()
-    recvP2F :: m p2f
-    recvA2F :: m a2f
-    recvZ2F :: m z2f
-
-{-class MonadRand m => MonadProtocol z2f f2z a2f f2a p2f f2p where
-    sendF2P :: f2p -> m ()
-    sendF2A :: f2a -> m ()
-    sendF2Z :: f2z -> m ()
-    recvP2F :: m p2f
-    recvA2F :: m a2f
-    recvZ2F :: m z2f
--}
 {- Provide input () until a value is received -}
 runUntilOutput :: (MonadRand m) => Chan () -> (Chan () -> Chan a -> m ()) -> m a
 runUntilOutput dump p = do

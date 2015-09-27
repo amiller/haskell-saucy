@@ -67,7 +67,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (extendSID sid ssid) $ f crupt p a (undefined, undefined)
+        fork $ runSID (extendSID sid (fst ssid) (snd ssid)) $ f crupt p a (undefined, undefined)
         return ()
 
   let getSsid _2ssid ssid = do
@@ -110,7 +110,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ runSID (extendSID sid ssid) $ p pid z f
+        fork $ runSID (extendSID sid (fst ssid) (snd ssid)) $ p pid z f
         return ()
 
   let getSsid _2ssid ssid = do
