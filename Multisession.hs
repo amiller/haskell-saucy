@@ -15,6 +15,7 @@ import Control.Monad (forever, forM_, replicateM_)
 import Control.Monad.Reader
 
 import System.Random
+import Safe
 
 import ProcessIO
 import StaticCorruptions
@@ -181,7 +182,7 @@ squash pid (z2p, p2z) (f2p, p2f) = do
     (s :: SID, m) <- readChan f2p
     --liftIO $ putStrLn $ "squash [f2p]: " ++ show s
     let sndsssid = snd s
-    let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+    let (ssid :: SID, fstsssid) :: (SID, String) = readNote "squash" $ fst s
     let sssid = (fstsssid, sndsssid)
     writeChan p2z (ssid, (sssid, m))
   return ()
@@ -219,12 +220,12 @@ squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     case mf of
       SttCruptZ2A_A2P (pid, (s, m)) -> do
                      let sndsssid = snd s
-                     let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+                     let (ssid :: SID, fstsssid) :: (SID, String) = readNote "squashS" $ fst s
                      let sssid = (fstsssid, sndsssid)
                      writeChan a2p (pid, (ssid, (sssid, m)))
       SttCruptZ2A_A2F (s, m)        -> do
                      let sndsssid = snd s
-                     let (ssid :: SID, fstsssid) :: (SID, String) = read $ fst s
+                     let (ssid :: SID, fstsssid) :: (SID, String) = readNote "squashS" $ fst s
                      let sssid = (fstsssid, sndsssid)
                      writeChan a2f $ (ssid, (sssid, m))
 
@@ -245,5 +246,5 @@ testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctiona
 testExecSquashIdeal :: IO String
 testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
 -- These three are equivalent
---testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
---testExecSquashIdeal = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+--testExecSquashIdeal' = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+--testExecSquashIdeal'' = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS

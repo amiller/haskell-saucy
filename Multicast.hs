@@ -48,9 +48,7 @@ fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
       fork $ forever $ do
         (pid, m) <- readChan p2f
         if pid == pidS then do
-          liftIO $ putStrLn $ "fMulticast: PARTIES " ++ show parties
           leak m
-          liftIO $ putStrLn $ "fMulticast: LEAK DONE"
           forMseq_ parties $ \pidR -> do
              byNextRound $ writeChan f2p (pidR, MulticastF2P_Deliver m)
           writeChan f2p (pidS, MulticastF2P_OK)

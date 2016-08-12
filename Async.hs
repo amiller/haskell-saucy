@@ -1,5 +1,5 @@
  {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
+  ScopedTypeVariables, MultiParamTypeClasses
   #-} 
 
 
@@ -151,7 +151,7 @@ type AsyncFuncT = ReaderT (Chan (Chan ()))
 
 --instance Monad m => MonadReader SID (ReaderT SID m) where
 
-instance MonadReader a m => MonadReader a (ReaderT b m) where
+instance {-# OVERLAPS #-} MonadReader a m => MonadReader a (ReaderT b m) where
     ask = lift ask
     local f m = undefined --lift (local f (lift m))
 --    getSID = lift getSID
@@ -166,7 +166,7 @@ instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadAsync (AsyncFuncT m) whe
       cb <- readChan reg
       return cb
 -}
-instance (MonadReader (Chan (Chan ())) m, MonadDuplex ClockPeerIn ClockPeerOut m) => MonadAsync m where
+instance {-# OVERLAPS #-} (MonadReader (Chan (Chan ())) m, MonadDuplex ClockPeerIn ClockPeerOut m) => MonadAsync m where
     registerCallback = do
       reg :: Chan (Chan ()) <- ask
       duplexWrite ClockPeerIn_Register
@@ -211,11 +211,11 @@ runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fClock (_runAsyncF f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
 runAsyncP :: (MonadSID m, HasFork m) =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m b)
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m ())
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
-     -> m b
+     -> m ()
 runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
   -- Asynchronous clock is transparent to parties
   p2f' <- wrapWrite DuplexP2F_Right          p2f
@@ -224,7 +224,8 @@ runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
   sid <- getSID
   let (leftConf :: String, rightConf :: String) = readNote ("runDuplexF:" ++ show (snd sid)) $ snd sid
   let rightSID = extendSID sid "DuplexRight" rightConf
-  runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
+  fork $ runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
+  return ()
 
 {-
 -- Example: fAuth

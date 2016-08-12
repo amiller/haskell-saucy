@@ -38,12 +38,6 @@ type Crupt = Map PID ()
 class MonadReader SID m => MonadSID m where
 instance MonadReader SID m => MonadSID m where
 
---instance Monad m => MonadSID (ReaderT SID m) where
---    getSID = ask
-
---instance MonadSID m => MonadSID (ReaderT (Chan ()) m) where
---    getSID = lift $ getSID
-
 type SIDMonadT = ReaderT SID
 runSID :: Monad m => SID -> SIDMonadT m a -> m a
 runSID = flip runReaderT
@@ -51,8 +45,12 @@ runSID = flip runReaderT
 getSID :: MonadSID m => m SID
 getSID = ask
 
-runSIDreplace :: MonadSID m => SID -> m a -> m a
-runSIDreplace sid = local (const sid)
+type Functionality p2f f2p a2f f2a z2f f2z m = Crupt -> (Chan p2f, Chan f2p) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
+
+alterSIDF :: MonadSID m => (SID -> SID) -> Functionality p2f f2p a2f f2a z2f f2z (SIDMonadT m) -> Functionality p2f f2p a2f f2a z2f f2z m
+alterSIDF trans f crupt p a z = do
+  sid <- getSID
+  runSID (trans sid) $ f crupt p a z
 
 -- Extends SID A with SID B... 
 -- A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B

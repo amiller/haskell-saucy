@@ -92,6 +92,7 @@ import Control.Concurrent.MonadIO
 import Control.Monad (forever)
 import Control.Monad.State
 import Control.Monad.Reader
+import Safe
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
@@ -138,7 +139,7 @@ fSignature (keygen, sign, verify) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   -- Parse SID as signer
   sid <- getSID
-  let (pidS :: PID, ssid :: String) = read $ snd sid
+  let (pidS :: PID, ssid :: String) = readNote "fSignature" $ snd sid
 
   -- Store state, including keypairs and signed messages
   keypairs <- newIORef (empty :: Map PID (SignatureSK,SignaturePK))

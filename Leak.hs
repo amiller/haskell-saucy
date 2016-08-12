@@ -28,53 +28,14 @@ class HasFork m => MonadLeak a m | m -> a where
 
 type LeakFuncT a = DuplexT (LeakPeerIn a) LeakPeerOut
 
-{-
-instance (HasFork m, MonadReader (Chan (LeakPeerIn a), Chan LeakPeerOut) m, MonadSID m) => MonadLeak a m where --(LeakFuncT a m) where
-    leak a = do
-      sid <- getSID
-      liftIO $ putStrLn $ "leak:" ++ show sid
-      (dW,dR) <- ask
-      writeChan dW (LeakPeerIn_Leak sid a)
-      LeakPeerOut_OK <- readChan dR
-      liftIO $ putStrLn $ "leak: leak done"
-      return ()
--}
 
-instance (HasFork m, MonadReader (Chan (LeakPeerIn a), Chan LeakPeerOut) m, MonadSID m) => MonadLeak a m where --(LeakFuncT a m) where
+instance (HasFork m, MonadDuplex (LeakPeerIn a) LeakPeerOut m, MonadSID m) => MonadLeak a m where
     leak a = do
       sid <- getSID
-      liftIO $ putStrLn $ "leak:" ++ show sid
-      (dW,dR) <- ask
-      writeChan dW (LeakPeerIn_Leak sid a)
-      LeakPeerOut_OK <- readChan dR
-      liftIO $ putStrLn $ "leak: leak done"
-      return ()
-{-
-instance (HasFork m) => MonadLeak a (SIDMonadT (LeakFuncT a m)) where
-    leak a = do
-      sid <- getSID
-      liftIO $ putStrLn $ "leak:" ++ show sid
-      --(dW,dR) <- ask
-      --writeChan dW (LeakPeerIn_Leak sid a)
-      --LeakPeerOut_OK <- readChan dR
-      lift $ duplexWrite (LeakPeerIn_Leak sid a)
-      LeakPeerOut_OK <- lift duplexRead
-      liftIO $ putStrLn $ "leak: leak done"
-      return ()
--}
-{-
-instance (HasFork m) => MonadLeak a (LeakFuncT a (SIDMonadT m)) where
-    leak a = do
-      sid <- lift getSID
-      liftIO $ putStrLn $ "leak:" ++ show sid
-      --(dW,dR) <- ask
-      --writeChan dW (LeakPeerIn_Leak sid a)
-      --LeakPeerOut_OK <- readChan dR
+      --liftIO $ putStrLn $ "leak:" ++ show sid
       duplexWrite (LeakPeerIn_Leak sid a)
       LeakPeerOut_OK <- duplexRead
-      liftIO $ putStrLn $ "leak: leak done"
       return ()
--}
 
 fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   buffer <- newIORef []
@@ -83,10 +44,11 @@ fLeak crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     liftIO $ putStrLn $ "[fLeak]: " ++ show sid
     modifyIORef buffer (++ [(sid,a)])
     duplexWrite LeakPeerOut_OK
-  forever $ do
+  fork $ forever $ do
     LeakA2F_Get <- readChan a2f
     buf <- readIORef buffer
     writeChan f2a (LeakF2A_Leaks buf)
+  return ()
 
 runLeakF
   :: (MonadSID m, HasFork m) =>
@@ -104,11 +66,11 @@ runLeakF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fLeak f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
 runLeakP :: (MonadSID m, HasFork m) =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m b)
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m ())
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
-     -> m b
+     -> m ()
 runLeakP p pid (z2p, p2z) (f2p, p2f) = do
   -- `runLeakF f` does not change the "f2p" interface compared to `f`, 
   -- except for adding a layer of DuplexRight wrapping/unwrapping
@@ -119,5 +81,5 @@ runLeakP p pid (z2p, p2z) (f2p, p2f) = do
   let (_ :: String, rightConf :: String) = readNote ("runLeakP:" ++ show (snd sid)) $ snd sid
   let rightSID = extendSID sid "DuplexRight" rightConf
 
-  runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
-
+  fork $ runSID rightSID $ p pid (z2p, p2z) (f2p', p2f')
+  return ()

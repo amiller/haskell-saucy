@@ -6,6 +6,7 @@ module ACast where
 
 import ProcessIO
 import StaticCorruptions
+import Both
 import Duplex
 import Leak
 import Async
@@ -49,12 +50,12 @@ fACast :: (MonadSID m, MonadLeak a m, MonadAsync m) =>
 fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Sender, set of parties, and tolerance parameter is encoded in SID
   sid <- getSID
-  let (pidS :: PID, parties :: [PID], t :: Int, sssid :: String) = read $ snd sid
+  let (pidS :: PID, parties :: [PID], t :: Int, sssid :: String) = readNote "fACast" $ snd sid
 
   -- Check the fault tolerance parameters
   let n = length parties
   assert (Map.size crupt <= t) "Fault tolerance assumption violated"
-  assert (n > 3*t) "Invalid fault tolerance parameter (must be 3t<n)"
+  assert (3*t < n) "Invalid fault tolerance parameter (must be 3t<n)"
 
   -- Store the first sent value
   value <- newIORef (Nothing :: Maybe a)
@@ -81,7 +82,7 @@ fACast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 {- Protocol ACast -}
 
-data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE ([Maybe SignatureSig], t) deriving (Show, Eq, Read)
+data ACastMsg t = ACast_VAL t | ACast_ECHO (SignatureSig, t) | ACast_DECIDE t [Maybe SignatureSig] deriving (Show, Eq, Read)
 
 -- Give (fBang fMulticast) a nicer interface
 manyMulticast :: (HasFork m) =>
@@ -94,24 +95,21 @@ manyMulticast pid parties (f2p, p2f) = do
   cOK <- newChan
 
   -- Handle writing
-  fork $ sequence_ $ flip map [0..] $ \(ctr :: Integer) -> do
+  fork $ forMseq_ [0..] $ \(ctr :: Integer) -> do
        m <- readChan p2f'
-       liftIO $ putStrLn $ "[manyMulticast]: read p2f'" -- ++ show m
        let ssid = (show ctr, show (pid, parties, ""))
        writeChan p2f (ssid, m)
 
   -- Handle reading (messages delivered in any order)
   fork $ forever $ do
     (ssid, mf) <- readChan f2p
-    liftIO $ putStrLn $ "[manyMulticast]: read f2p"
-    undefined
     let (pidS :: PID, _ :: [PID], _ :: String) = readNote "manyMulti" $ snd ssid
     case mf of
       MulticastF2P_OK -> do
                      assert (pidS == pid) "ok delivered to wrong pid"
                      writeChan cOK ()
       MulticastF2P_Deliver m -> do
-                     writeChan f2p' (pid, m)
+                     writeChan f2p' (pidS, m)
   return (f2p', p2f', cOK)
 
 readBangMulticast pid parties f2p = do
@@ -138,22 +136,23 @@ readBangAnyOrder f2p = do
 protACast :: (MonadSID m, HasFork m) =>
      PID
      -> (Chan (ACastP2F String), Chan (ACastF2P String))
-     -> (Chan (DuplexF2P (SID, MulticastF2P (ACastMsg String)) (SignatureF2P)),
-         Chan (DuplexP2F (SID, ACastMsg String) (SignatureP2F String)))
+     -> (Chan (BothF2P (SID, MulticastF2P (ACastMsg String)) (SID, SignatureF2P)),
+         Chan (BothP2F (SID, ACastMsg String) (SID, SignatureP2F String)))
      -> m ()
 protACast pid (z2p, p2z) (f2p, p2f) = do
   -- Sender and set of parties is encoded in SID
   sid <- getSID
-  let (pidS :: PID, parties :: [PID], t :: Int, sssid :: String) = read $ snd sid
-
+  let (pidS :: PID, parties :: [PID], t :: Int, sssid :: String) = readNote "protACast" $ snd sid
   cOK <- newChan
 
-  -- Keep track
+  -- Keep track of state
   inputReceived <- newIORef False
-  echoes <- newIORef (Map.empty :: Map PID (SignatureSig, v))
+  decided <- newIORef False
+  echoes <- newIORef (Map.empty :: Map String (Map PID SignatureSig))
   
   -- Prepare channels
-  ((f2p_mcast, p2f_mcast), (f2p_sig, p2f_sig)) <- splitDuplexP (f2p, p2f)
+  ((f2p_mcast, p2f_mcast), (f2p_sig, p2f_sig)) <- splitBothP (f2p, p2f)
+  --(f2p_mcast, p2f_mcast) <- return (f2p, p2f)
   (recvC, multicastC, cOK) <- manyMulticast pid parties (f2p_mcast, p2f_mcast)
   let multicast x = do
         writeChan multicastC x 
@@ -169,9 +168,23 @@ protACast pid (z2p, p2z) (f2p, p2f) = do
     liftIO $ putStrLn $ "[protACast]: multicast done"
     writeChan p2z ACastF2P_OK
 
+  let sign v = do
+        writeChan p2f_sig $ (("", show (pid, "")), SignatureP2F_Sign v)
+        (_, SignatureF2P_Sig sig) <- readChan f2p_sig
+        return sig
+
+  let verify pid msg sig = do
+        writeChan p2f_sig $ (("", show (pid, "")), SignatureP2F_Verify msg sig)
+        (_, SignatureF2P_Verify b) <- readChan f2p_sig
+        return b
+
+  let n = length parties
+  let thresh = ceiling (toRational (n+t+1) / 2)
+
   -- Receive messages from multicast
   fork $ forever $ do
     (pid', m) <- recv
+    liftIO $ putStrLn $ "[protACast]: " ++ show (pid', m)
     case m of
       ACast_VAL v -> do
           -- Check this is the *FIRST message from the right sender
@@ -180,37 +193,71 @@ protACast pid (z2p, p2z) (f2p, p2f) = do
           writeIORef inputReceived True
 
           -- Create a signature
-          sig <- undefined
+          sig <- sign v
           -- Multicast ECHO(sig, v)
           multicast $ ACast_ECHO (sig, v)
+          writeChan p2z ACastF2P_OK
 
-      ACast_ECHO (sig, v) -> 
+      ACast_ECHO (sig, v) -> do
           -- Check the signature using the fSignature instance for pidS'
-          --  verifySig pidS' sig v
           -- Add this signature to a list
-          undefined
-      ACast_DECIDE (sigs, v) -> 
+          b <- verify pidS v sig
+          assert b "[protACast]: verify sig failed"
+          ech <- readIORef echoes
+          let echV = Map.findWithDefault Map.empty v ech
+          assert (not $ Map.member pid' echV) $ "Already echoed"
+          let echV' = Map.insert pid' sig echV
+          writeIORef echoes $ Map.insert v echV' ech
+          liftIO $ putStrLn $ "[protACast] echo updated"
+          --  Check if ready to decide
+          --liftIO $ putStrLn $ "[protACast] " ++ show n ++ " " ++ show thresh ++ " " ++ show (Map.size echV')
+          if Map.size echV' == thresh then do
+              liftIO $ putStrLn "Threshold met! Deciding"
+              multicast $ ACast_DECIDE v [Map.lookup p echV' | p <- parties]
+          else do
+              liftIO $ putStrLn $ "[protACast] not met yet"
+              return ()
+          liftIO $ putStrLn $ "[protACast] return OK"
+          writeChan p2z ACastF2P_OK
+
+      ACast_DECIDE v sigs -> do
           -- Check each signature
-          undefined
-    
+          dec <- readIORef decided
+          if dec then writeChan p2z (ACastF2P_OK)
+          else do
+            ctr <- newIORef 0
+            forMseq_ (zip parties sigs) $ \(p, sig') ->
+                case sig' of 
+                  Nothing -> return ()
+                  Just sig -> verify p v sig >>= \b -> 
+                              if b then modifyIORef ctr (+1)
+                              else return ()
+            ct <- readIORef ctr
+            if ct == thresh then do
+              liftIO $ putStrLn "Deciding!"
+              multicast $ ACast_DECIDE v sigs
+              writeIORef decided True
+              writeChan p2z (ACastF2P_Deliver v)
+            else 
+              writeChan p2z ACastF2P_OK
   return ()
 
 
 -- More utils
 
-splitDuplexP (f2p, p2f) = do
+splitBothP (f2p, p2f) = do
   -- Reading
   f2pL <- newChan
   f2pR <- newChan
   fork $ forever $ do
     mf <- readChan f2p
     case mf of
-      DuplexF2P_Left  m -> writeChan f2pL m 
-      DuplexF2P_Right m -> writeChan f2pR m
+      BothF2P_Left  m -> writeChan f2pL m 
+      BothF2P_Right m -> writeChan f2pR m
 
   -- Writing
-  p2fL <- wrapWrite DuplexP2F_Left  p2f
-  p2fR <- wrapWrite DuplexP2F_Right p2f
+  p2fL <- wrapWrite BothP2F_Left  p2f
+  p2fR <- wrapWrite BothP2F_Right p2f
 
   return ((f2pL, p2fL), (f2pR, p2fR))
 
@@ -248,7 +295,7 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   writeChan z2p ("Alice", ACastP2F_Input "I'm Alice")
 
   -- Advance to round 1
-  forMseq_ [1..12 :: Integer] $ const $ do
+  forMseq_ [1..58 :: Integer] $ const $ do
                  () <- readChan pump
                  --liftIO $ putStrLn "[testEnvACast]: read pump"
                  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
@@ -259,37 +306,12 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 testACastIdeal :: IO String
 testACastIdeal = runRand $ execUC testEnvACast (runAsyncP $ runLeakP idealProtocol) (runAsyncF $ runLeakF $ fACast) voidAdversary
 
---instance MonadAsync m => MonadAsync (DuplexT a b m) where
---    registerCallback = lift registerCallback
-
---instance MonadLeak t m => MonadLeak t (DuplexT a b m) where
---    leak = lift . leak
-
-{-
-ff :: (MonadSID m, MonadAsync m) => 
-            Crupt
-            -> (Chan
-                  (PID,
-                   DuplexP2F Void (DuplexP2F (SID, (ACastMsg String)) (SignatureP2F String))),
-                Chan
-                  (PID,
-                   DuplexF2P Void (DuplexF2P (SID, MulticastF2P (ACastMsg String)) SignatureF2P)))
-            -> (Chan
-                  (DuplexA2F LeakA2F (DuplexA2F (SID, MulticastA2F (ACastMsg String)) Void)),
-                Chan
-                  (DuplexF2A
-                     (LeakF2A (ACastMsg String)) (DuplexF2A (SID, MulticastF2A (ACastMsg String)) Void)))
-            -> (Chan (DuplexZ2F Void (DuplexZ2F Void Void)),
-                Chan (DuplexF2Z Void (DuplexF2Z Void Void)))
-            -> m ()
-ff = runLeakF $ runDuplexF (bangF fMulticast) (fSignature defaultSignature)
--}
-
 testACastReal :: IO String
 testACastReal = runRand $ execUC 
   testEnvACast 
-  (runAsyncP $ runLeakP protACast) 
-  (runAsyncF $ runLeakF $ runDuplexF 
-                 (bangF fMulticast) 
-                 (fSignature defaultSignature)) 
+  (runAsyncP $ runLeakP $ protACast) 
+  (runAsyncF $ runLeakF $ alterSIDF (\(tag,conf) -> (tag, show ("",""))) $ 
+                 runBothF
+                 (bangF fMulticast)
+                 (bangF $ fSignature defaultSignature))
   dummyAdversary

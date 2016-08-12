@@ -40,22 +40,14 @@ class HasFork m => MonadDuplex a b m | m -> a b where
     duplexWrite :: a -> m ()
     duplexRead  ::      m b
 
-type DuplexT a b = ReaderT (Chan a, Chan b)
+data DuplexSentinel = DuplexSentinel
 
---instance HasFork m => MonadDuplex a b (DuplexT a b m) where
---    duplexWrite a = ask >>= \(c, _) -> writeChan c a
---    duplexRead    = ask >>= \(_, c) -> readChan c
+type DuplexT a b = ReaderT (Chan a, Chan b)
 
 instance (HasFork m, MonadReader (Chan a, Chan b) m) => MonadDuplex a b m where
     duplexWrite a = ask >>= \(c, _) -> writeChan c a
     duplexRead    = ask >>= \(_, c) -> readChan c
 
---instance MonadSID m => MonadSID (DuplexT a b m) where
---    getSID = lift getSID
-
---instance MonadDuplex a b m => MonadDuplex a b (SIDMonadT m) where
---    duplexWrite = lift . duplexWrite
---    duplexRead  = lift $ duplexRead
 
 -- Functionality wrapper
 
@@ -65,12 +57,12 @@ runDuplexF
       -> (Chan (PID, p2fL), Chan (PID, f2pL))
       -> (Chan a2fL, Chan f2aL)
       -> (Chan z2fL, Chan f2zL)
-      -> ReaderT (Chan l2r, Chan r2l) (SIDMonadT m) ())
+      -> DuplexT l2r r2l (SIDMonadT m) ())
      -> (Crupt
          -> (Chan (PID, p2fR), Chan (PID, f2pR))
          -> (Chan a2fR, Chan f2aR)
          -> (Chan z2fR, Chan f2zR)
-         -> ReaderT (Chan r2l, Chan l2r) (SIDMonadT m) ())
+         -> DuplexT r2l l2r (SIDMonadT m) ())
      -> Crupt
      -> (Chan (PID, DuplexP2F p2fL p2fR), Chan (PID, DuplexF2P f2pL f2pR))
      -> (Chan (DuplexA2F a2fL a2fR), Chan (DuplexF2A f2aL f2aR))
@@ -120,7 +112,7 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   let  leftSID = extendSID sid "DuplexLeft"   leftConf
   let rightSID = extendSID sid "DuplexRight" rightConf
 
-  fork $ runSID leftSID $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
+  fork $ runSID  leftSID $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
   fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
   return ()
 
@@ -213,3 +205,6 @@ runDuplexS sL sR crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ flip runReaderT (l2r, r2l) $ sL crupt (z2aL, a2zL) (p2aL, a2pL) (f2aL, a2fL)
   fork $ flip runReaderT (r2l, l2r) $ sR crupt (z2aR, a2zR) (p2aR, a2pR) (f2aR, a2fR)
   return ()
+
+
+
