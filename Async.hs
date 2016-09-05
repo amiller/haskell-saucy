@@ -76,8 +76,6 @@ type Round = Int
 {-- Types of messages exchanged with the clock --}
 data ClockA2F = ClockA2F_GetState | ClockA2F_Deliver Int Int deriving Show
 data ClockF2A = ClockF2A_RoundOK PID | ClockF2A_State Int (Map PID Bool) deriving Show
-data ClockF2Z = ClockF2Z_Round Int deriving Show
-data ClockZ2F = ClockZ2F_MakeProgress deriving Show
 data ClockPeerIn = ClockPeerIn_Register deriving Show
 data ClockPeerOut = ClockPeerOut_Registered CallbackID | ClockPeerOut_Callback CallbackID deriving Show
 
