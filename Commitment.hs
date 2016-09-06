@@ -285,7 +285,8 @@ expt3' = expt3 simBindingNotHiding protBindingNotHiding
 
 -- [Experiment 4]
 -- This experiment is the ideal analogue to expt3
--- However, here True
+-- However, here (b,b') must be *uncorrelated*. This is because
+-- sim is simply not given any access to b.
 expt4 = testComZ2TestIdeal True
 expt4' = expt4 simBindingNotHiding protBindingNotHiding
 
