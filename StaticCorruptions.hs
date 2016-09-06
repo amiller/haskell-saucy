@@ -36,14 +36,17 @@ type Crupt = Map PID ()
  --  conf: a string containing configuration parameters
  ----------------}
 class MonadReader SID m => MonadSID m where
+    getSID :: m SID
+
 instance MonadReader SID m => MonadSID m where
+    getSID = ask
 
 type SIDMonadT = ReaderT SID
 runSID :: Monad m => SID -> SIDMonadT m a -> m a
 runSID = flip runReaderT
 
-getSID :: MonadSID m => m SID
-getSID = ask
+--getSID :: MonadSID m => m SID
+--getSID = ask
 
 type Functionality p2f f2p a2f f2a z2f f2z m = Crupt -> (Chan p2f, Chan f2p) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
 
@@ -120,7 +123,8 @@ execUC z p f a = do
 
     fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
     fork $ runSID sid $ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
-    fork $ runSID sid $ runDefault dump $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
+    -- reversing the order of dump and runSID breaks it??
+    fork $ runDefault dump $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
     return ()
 
   runUntilOutput dump $ (\pump outp -> runDefault dump $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp)
@@ -183,6 +187,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
       --liftIO $ putStrLn $ "party wrapper f->p received: " ++ show m
       getPid f2pid pid >>= flip writeChan m
 
+  -- Pass messages to corrupt parties on to the functionatliy
   fork $ forever $ do
     (pid, m) <- readChan a2p
     if not $ member pid crupt then fail "tried to send corrupted!" else return undefined
