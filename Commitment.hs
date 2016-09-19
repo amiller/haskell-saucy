@@ -450,3 +450,149 @@ simHiding crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
       return ()
   else return ()
   return ()
+
+
+
+-- Positive result (needs Random Oracle)
+data RoP2F a = RoP2F a
+data RoF2P   = RoF2P Int
+fRO (p2f, f2p) = do
+  table <- newIORef Map.empty
+  fork $ forever $ do
+    (pid, RoP2F m) <- readChan p2f
+    tbl <- readIORef table
+    if member (show m) tbl then
+        let Just h = Map.lookup (show m) tbl in
+        writeChan f2p (pid, RoF2P h)
+    else do
+        h <- getNbits 120 -- generate a random string
+        modifyIORef table (Map.insert (show m) h)
+        writeChan f2p (pid, RoF2P h)
+  return ()
+
+data AuthRoP2F a b = AuthRoP2F_Auth a | AuthRoP2F_Ro b
+data AuthRoF2P a   = AuthRoF2P_Auth a | AuthRoF2P_Ro RoF2P
+fAuthRO leak optionally crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+  p2fro <- newChan
+  p2fauth <- newChan
+  f2pro <- wrapWrite (\(pid,m) -> (pid,AuthRoF2P_Ro m)) f2p
+  f2pauth <- wrapWrite (\(pid,m) -> (pid, AuthRoF2P_Auth m)) f2p
+
+  fork $ forever $ do
+    (pid, mf) <- readChan p2f
+    case mf of
+      AuthRoP2F_Ro m   -> writeChan p2fro (pid, m)
+      AuthRoP2F_Auth m -> writeChan p2fauth (pid, m)
+
+  fork $ fAuth leak optionally crupt (p2fauth, f2pauth) (a2f, f2a) (z2f, f2z)
+  fork $ fRO (p2fro, f2pro)
+  return ()
+
+data ProtComm_Msg a = ProtComm_Commit Int | ProtComm_Open Int a deriving Show
+protComm pid (z2p, p2z) (f2p, p2f) = do
+    -- Parse sid as defining two players
+  (_,sid) <- getSID
+  let (pidS :: PID, pidR :: PID, ssid :: SID) = read sid
+  case () of 
+    _ | pid == pidS -> do
+            -- Wait for commit instruction
+            ComP2F_Commit b <- readChan z2p
+            -- Generate the blinding
+            nonce :: Int <- getNbits 120
+            -- Query the random oracle
+            writeChan p2f $ AuthRoP2F_Ro (RoP2F (nonce, b))
+            AuthRoF2P_Ro (RoF2P h) <- readChan f2p
+            writeChan p2f $ AuthRoP2F_Auth (ProtComm_Commit h)
+            AuthRoF2P_Auth AuthF2P_OK <- readChan f2p
+            writeChan p2z ComF2P_OK
+
+            -- Wait for open instruction
+            ComP2F_Open <- readChan z2p
+            writeChan p2f $ AuthRoP2F_Auth (ProtComm_Open nonce b)
+            AuthRoF2P_Auth AuthF2P_OK <- readChan f2p
+            writeChan p2z ComF2P_OK
+
+    _ | pid == pidR -> do
+            AuthRoF2P_Auth (AuthF2P_Msg (ProtComm_Commit h)) <- readChan f2p
+            writeChan p2z ComF2P_Commit
+            AuthRoF2P_Auth (AuthF2P_Msg (ProtComm_Open nonce b)) <- readChan f2p
+            -- Query the RO 
+            writeChan p2f $ AuthRoP2F_Ro (RoP2F (nonce, b))
+            AuthRoF2P_Ro (RoF2P h') <- readChan f2p
+            if not (h' == h) then fail "hash mismatch" else return ()
+
+            -- Output
+            writeChan p2z $ ComF2P_Open b
+
+simComm crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  -- Parse sid as defining two players
+  (_,sid) <- getSID
+  let (pidS :: PID, pidR :: PID, ssid :: SID) = read sid
+
+  a2s <- newChan
+  f2r <- newChan
+  f2s <- newChan
+
+  fork $ forever $ do
+    mf <- readChan z2a
+    case mf of SttCruptZ2A_A2P (pid, m) | pid == pidS -> do
+                     liftIO $ putStrLn $ "sim: sender " ++ show m
+                     writeChan a2s (m :: Hiding_Msg Bool)
+               SttCruptZ2A_A2F (OptionalA2F_Deliver 0) -> do
+                     liftIO $ putStrLn $ "sim: deliver"
+                     writeChan a2f $ OptionalA2F_Deliver 0
+  fork $ forever $ do
+    (pid, m) <- readChan p2a
+    case () of _ | pid == pidS -> writeChan f2s m
+               _ | pid == pidR -> writeChan f2r m
+
+  -- Internalize the RO!
+  table <- newIORef Map.empty -- map x to h(x) 
+  backtable <- newIORef Map.empty -- map h(x) to x
+
+  if member pidS crupt then do
+      fork $ do
+
+        -- Handle committing
+        Hiding_Commit <- readChan a2s
+        -- Can't simulate very well - generate a random bit
+        b <- getBit
+        liftIO $ putStrLn $ "sim: writing p2f_Commit"
+        writeChan a2p (pidS, ComP2F_Commit b)
+        ComF2P_OK <- readChan f2s
+        writeChan a2z $ SttCruptA2Z_P2A (pidS, AuthF2P_OK)
+
+        -- Handle opening
+        (Hiding_Open b') <- readChan a2s
+        writeChan a2p (pidS, ComP2F_Open)
+        ComF2P_OK <- readChan f2s
+        return ()
+      return ()
+  else return ()
+  if member pidR crupt then do
+      fork $ do
+        -- Handle delivery of commitment
+        ComF2P_Commit <- readChan f2r 
+        liftIO $ putStrLn $ "simCom: received Commit"
+        -- Easy to simulate
+        writeChan a2z $ SttCruptA2Z_P2A (pidR, AuthF2P_Msg Hiding_Commit)
+        -- Handle delivery of opening
+        ComF2P_Open b <- readChan f2r
+        writeChan a2z $ SttCruptA2Z_P2A (pidR, AuthF2P_Msg$Hiding_Open b)
+      return ()
+  else return ()
+  return ()
+
+
+testComBenignRoReal :: IO _
+testComBenignRoReal = runRand $ execUC envComBenign (protComm) (runOptLeak fAuthRO) (dummyAdversary)
+
+testComBenignRoIdeal :: IO _
+testComBenignRoIdeal = runRand $ execUC envComBenign (idealProtocol) (runOptLeak fCom) simComm
+
+
+--testComZ2RoReal :: IO _
+--testComZ2RoReal = runRand $ execUC  (envComZ2 False simComm protComm) (protComm) (runOptLeak fAuthRO) (dummyAdversary)
+
+--testComZ2RoIdeal :: IO _
+--testComZ2RoIdeal = runRand $ execUC (envComZ2 False simComm protComm) (idealProtocol) (runOptLeak fCom) simComm
