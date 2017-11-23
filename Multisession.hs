@@ -1,6 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables
-  
+ {-# LANGUAGE ImplicitParams, Rank2Types, ScopedTypeVariables
   #-} 
 
 {- 
@@ -15,13 +13,13 @@ import Control.Monad (forever, forM_, replicateM_)
 import Control.Monad.Reader
 
 import System.Random
-import Safe
 
 import ProcessIO
 import StaticCorruptions
 
 import Data.IORef.MonadIO
 import Data.Map.Strict
+import Safe
 
 {- Multi-session extensions -}
 
@@ -36,12 +34,12 @@ import Data.Map.Strict
  -}
 
 bangF
-  :: (MonadSID m, HasFork m) =>
-     (Crupt
+  :: (HasFork m, ?sid::SID) =>
+     ((?sid::SID) => Crupt
       -> (Chan (PID, p2f), Chan (PID, f2p))
       -> (Chan a2f, Chan f2a)
       -> (Chan Void, Chan Void)
-      -> SIDMonadT m ())
+      -> m ())
      -> Crupt
      -> (Chan (PID, (SID, p2f)), Chan (PID, (SID, f2p)))
      -> (Chan (SID, a2f), Chan (SID, f2a))
@@ -139,7 +137,7 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
 
 {- Test cases for multisession -}
 
-testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (z2f, f2z) pump outp = do
+testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("sid1","") empty
 
@@ -147,7 +145,7 @@ testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (z2f, f2z) pump outp = do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
     --writeChan outp "()"
-    pass
+    ?pass
 
   fork $ forever $ do
     m <- readChan a2z
@@ -156,7 +154,7 @@ testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (z2f, f2z) pump outp = do
 
   () <- readChan pump
   liftIO $ putStrLn "pump"
-  b <- getBit
+  b <- ?getBit
   if b then
       writeChan z2p ("Alice", (("ssidX",""), show "0"))
   else
@@ -168,7 +166,6 @@ testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (z2f, f2z) pump outp = do
 
 testExecMulti :: IO String
 testExecMulti = runRand $ execUC testEnvMulti (bangP idealProtocol) (bangF dummyFunctionality) dummyAdversary
-
 
 {- Squash Theorem -}
 {- !F -> !!F -}
@@ -195,7 +192,7 @@ testEnvSquash z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
     --writeChan outp "()"
-    pass
+    ?pass
 
   fork $ forever $ do
     m <- readChan a2z -- :: SttCruptA2Z (SID, String) (SID, a) <- readChan a2z
@@ -204,7 +201,7 @@ testEnvSquash z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   () <- readChan pump
   liftIO $ putStrLn "pump"
-  b <- getBit
+  b <- ?getBit
   if b then
       writeChan z2p ("Alice", (("ssidY",""), (("sssidX",""), "0")))
   else
@@ -246,5 +243,10 @@ testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctiona
 testExecSquashIdeal :: IO String
 testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
 -- These three are equivalent
---testExecSquashIdeal' = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
---testExecSquashIdeal'' = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+
+testExecSquashIdeal' :: IO String
+testExecSquashIdeal' = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+
+testExecSquashIdeal'' :: IO String
+testExecSquashIdeal'' = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+

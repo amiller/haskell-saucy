@@ -1,6 +1,6 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies
-  
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
+  ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies,
+  ImplicitParams, Rank2Types
   #-} 
 
 {- 
@@ -11,49 +11,25 @@
 module StaticCorruptions where
 
 import Control.Concurrent.MonadIO
-import Control.Monad (forever, forM_, replicateM_)
-import Control.Monad.Reader
-
+import Control.Monad (forever, forM_, replicateM_, replicateM)
 import System.Random
 
 import ProcessIO
 
 import Data.IORef.MonadIO
-import Data.Map.Strict
+import Data.Map.Strict hiding (drop,splitAt)
 
 
 deleteAtIndex index list = pref ++ (drop 1 suff) 
     where (pref,suff) = splitAt index list
-
-type PID = String
-type SID = (String, String)
-
-type Crupt = Map PID ()
 
 {----------------
  -- Session IDs
  --  tag:  a unique string, based on the callgraph of protocols/functionalities
  --  conf: a string containing configuration parameters
  ----------------}
-class MonadReader SID m => MonadSID m where
-    getSID :: m SID
 
-instance MonadReader SID m => MonadSID m where
-    getSID = ask
-
-type SIDMonadT = ReaderT SID
-runSID :: Monad m => SID -> SIDMonadT m a -> m a
-runSID = flip runReaderT
-
---getSID :: MonadSID m => m SID
---getSID = ask
-
-type Functionality p2f f2p a2f f2a z2f f2z m = Crupt -> (Chan p2f, Chan f2p) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
-
-alterSIDF :: MonadSID m => (SID -> SID) -> Functionality p2f f2p a2f f2a z2f f2z (SIDMonadT m) -> Functionality p2f f2p a2f f2a z2f f2z m
-alterSIDF trans f crupt p a z = do
-  sid <- getSID
-  runSID (trans sid) $ f crupt p a z
+type SID = (String, String)
 
 -- Extends SID A with SID B... 
 -- A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B
@@ -61,14 +37,32 @@ extendSID :: SID -> String -> String -> SID
 --extendSID sid (tag, conf) = (show (sid, tag), conf)
 extendSID sid tag conf = (show (fst sid, tag), conf) -- This version drops the prior config
 
+-- Player IDs
+type PID = String
+
+-- Corruption maps
+type Crupt = Map PID ()
+
+
+type Functionality p2f f2p a2f f2a z2f f2z m = Crupt -> (Chan p2f, Chan f2p) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
+
+runSID :: Monad m => SID -> ((?sid :: SID) => m a) -> m a
+runSID sid f = let ?sid = sid in f
+getSID :: (Monad m, ?sid :: SID) => m SID
+getSID = return ?sid
+
+--alterSIDF :: MonadSID m => (SID -> SID) -> Functionality p2f f2p a2f f2a z2f f2z (SIDMonadT m) -> Functionality p2f f2p a2f f2a z2f f2z m
+--alterSIDF trans f crupt p a z = do
+--  sid <- getSID
+--  runSID (trans sid) $ f crupt p a z
+
+
 {- Provide input () until a value is received -}
-runUntilOutput :: (MonadRand m) => Chan () -> (Chan () -> Chan a -> m ()) -> m a
+runUntilOutput :: HasFork m => Chan () -> ((?pass :: m ()) => Chan () -> Chan a -> m ()) -> m a
 runUntilOutput dump p = do
   pump <- newChan
-  --dump <- newChan
   outp <- newChan
-  --fork $ runDefault dump (p pump outp)
-  fork $ p pump outp
+  fork $ runDefault dump $ p pump outp
   c <- multiplex dump outp
   let _run = do
         writeChan pump ()
@@ -77,26 +71,50 @@ runUntilOutput dump p = do
           Left  () -> _run
           Right a  -> return a in _run
 
-test3 :: (MonadDefault m, MonadRand m) => Chan () -> Chan Int -> m ()
+test3 :: (HasFork m, ?pass :: m (), ?getBit :: m Bool) => Chan () -> Chan Int -> m ()
 test3 pump outp = test3' 0 where
     test3' n = do
       () <- readChan pump
-      b1 <- getBit
-      b2 <- getBit
-      b3 <- getBit
-      b4 <- getBit;
+      b1 <- ?getBit
+      b2 <- ?getBit
+      b3 <- ?getBit
+      b4 <- ?getBit
       --lift $ putStrLn $ show [b1,b2,b3,b4];
       if (b1 == b2 && b2 == b3 && b3 == b4 && b4 == True) then
           writeChan outp n
       else
-          pass;
+          ?pass;
           test3' (n+1)
 
---test3run :: IO [Int]
---test3run = replicateM 10 $ runRand $ runUntilOutput test3
+test3run :: IO [Int]
+test3run = do
+  dump <- newChan
+  replicateM 10 $ runRand $ runUntilOutput dump test3
+
 
 
 {- UC Experiments -}
+execUC
+  :: HasFork m =>
+       ((?pass :: m ()) => Chan SttCrupt_SidCrupt
+             -> (Chan (PID, p2z), Chan (PID, z2p))
+                   -> (Chan a2z, Chan z2a)
+                   -> (Chan f2z, Chan z2f)
+                   -> Chan ()
+                   -> Chan outz
+                   -> m ())
+       -> ((?sid::SID) => PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
+       -> ((?sid::SID) => Crupt
+                  -> (Chan (PID, p2f), Chan (PID, f2p))
+                  -> (Chan a2f, Chan f2a)
+                  -> (Chan z2f, Chan f2z)
+                  -> m ())
+       -> (Crupt
+                  -> (Chan z2a, Chan a2z)
+                  -> (Chan (PID, f2p), Chan (PID, p2f))
+                  -> (Chan f2a, Chan a2f)
+                  -> m ())
+       -> m outz
 execUC z p f a = do
   {- 
     UC communication layout
@@ -127,7 +145,7 @@ execUC z p f a = do
     fork $ runDefault dump $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
     return ()
 
-  runUntilOutput dump $ (\pump outp -> runDefault dump $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp)
+  runUntilOutput dump $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f)
 
 data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID Crupt deriving Show
 
@@ -222,9 +240,9 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   return ()
 
 voidAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
-  fork $ forever $ readChan z2a >> pass
-  fork $ forever $ readChan f2a >> pass
-  fork $ forever $ readChan p2a >> pass
+  fork $ forever $ readChan z2a >> ?pass
+  fork $ forever $ readChan f2a >> ?pass
+  fork $ forever $ readChan p2a >> ?pass
   return ()
 
 dummyFunctionality crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
@@ -249,7 +267,7 @@ testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
     --writeChan outp ()
-    pass
+    ?pass
 
   fork $ forever $ do
     m <- readChan a2z
@@ -258,7 +276,7 @@ testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   () <- readChan pump
   liftIO $ putStrLn "pump"
-  b <- getBit
+  b <- ?getBit
   if b then
       writeChan z2p ("Alice", show "0")
   else
@@ -269,7 +287,7 @@ testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
 testExec :: IO String
 testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
-
+--testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
 
 
 
@@ -402,7 +420,3 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     (pid, m) <- readChan z2pZ
     if member pid crupt then fail "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
-
-
-
-
