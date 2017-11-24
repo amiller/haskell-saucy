@@ -1,5 +1,4 @@
- {-# LANGUAGE ImplicitParams, ScopedTypeVariables, MultiParamTypeClasses,
-     Rank2Types
+ {-# LANGUAGE ImplicitParams, ScopedTypeVariables, Rank2Types
   #-} 
 
 
@@ -35,7 +34,7 @@ import qualified Data.Map.Strict as Map
      As usual, these programming abstractions are defined as Haskell monad typeclasses, and are implemented as composition with another functionality (fClock).
 
      Looking ahead:
-        Synchronous protocols are just ones where the parties have access to getRound
+        Synchronous protocols are just ones where the parties (and not just the functionality) have access to getRound
  --}
 
 byNextRound m = do
@@ -60,7 +59,7 @@ withinNRounds def n m = do
 {--
   fClock functionality:
    Lets other functionalities schedule events to be delivered in the future, in any order chosen by the adversary
-   However, it keeps track of the current round
+   However, the functionality keeps track of the current round
    Environment can "force" progress to move along
    The adversary is thus unable to stall forever
  --}
@@ -258,7 +257,7 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 {-- Example environment using fAuth --}
 
 testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestAuthAsync", show ("", show ("", show ("Alice", "Bob", ""))))
+  let sid = ("sidTestAuthAsync", show ("Alice", "Bob", ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     x <- readChan p2z
@@ -298,18 +297,9 @@ testAuthAsync :: IO String
 testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF $ runLeakF fAuth) dummyAdversary
 
 
-{--
 
 
 {-- Example environments using !fAuth --}
-
-instance (MonadAsync m => MonadAsync (SIDMonadT m)) where
-    registerCallback = lift registerCallback
-
---instance (MonadLeak (SID, a) m => MonadLeak a (SIDMonadT m)) where
---    leak x = do
---      sid <- getSID
---      lift (leak (sid, x))
 
 testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestAuthAsync", show ("", (show ("", ""))))
@@ -317,15 +307,15 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     (pid, m) <- readChan p2z
     liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show m
-    pass
+    ?pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
+    ?pass
 
   -- Have Alice write a message
   () <- readChan pump
@@ -360,5 +350,3 @@ testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP $ runLeakP idealPro
 --  runDuplexS dummyAdversary s crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
 
 
-
--}
