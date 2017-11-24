@@ -1,5 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies,
-  ImplicitParams, FlexibleInstances, FlexibleContexts, UndecidableInstances, Rank2Types
+{-# LANGUAGE ScopedTypeVariables, ImplicitParams, Rank2Types
   #-} 
 
 
@@ -10,8 +9,7 @@ import ProcessIO
 import Safe
 
 import Control.Concurrent.MonadIO
-import Control.Monad (forever, forM_, replicateM_)
-import Control.Monad.Reader
+import Control.Monad (forever)
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
@@ -38,12 +36,12 @@ data DuplexP2A a b = DuplexP2A_Left a | DuplexP2A_Right b deriving Show
 
 runDuplexF
   :: ((?sid::SID), HasFork m) =>
-      ((?duplexWrite :: a -> m (), ?duplexRead :: m b) => Crupt
+      ((?sid::SID, ?duplexWrite :: a -> m (), ?duplexRead :: m b) => Crupt
        -> (Chan (PID, p2fL), Chan (PID, f2pL))
        -> (Chan a2fL, Chan f2aL)
        -> (Chan z2fL, Chan f2zL)
        -> m ())
-   -> ((?duplexWrite :: b -> m (), ?duplexRead :: m a) => Crupt
+   -> ((?sid::SID, ?duplexWrite :: b -> m (), ?duplexRead :: m a) => Crupt
        -> (Chan (PID, p2fR), Chan (PID, f2pR))
        -> (Chan a2fR, Chan f2aR)
        -> (Chan z2fR, Chan f2zR)
@@ -109,11 +107,11 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 runDuplexP
   :: ((?sid::SID), HasFork m) =>
-      ((?duplexWrite :: a -> m (), ?duplexRead :: m b) => PID
+      ((?sid::SID, ?duplexWrite :: a -> m (), ?duplexRead :: m b) => PID
        -> (Chan z2pL, Chan p2zL)
        -> (Chan f2pL, Chan p2fL)
        -> m ())
-   -> ((?duplexWrite :: b -> m (), ?duplexRead :: m a) => PID
+   -> ((?sid::SID, ?duplexWrite :: b -> m (), ?duplexRead :: m a) => PID
        -> (Chan z2pR, Chan p2zR)
        -> (Chan f2pR, Chan p2fR)
        -> m ())
@@ -157,7 +155,7 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
                              pR pid (z2pR, p2zR) (f2pR, p2fR)
   return ()
 
-
+{--
 -- Simulator wrapper
 runDuplexS sL sR crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   z2aL <- newChan
@@ -204,9 +202,9 @@ runDuplexS sL sR crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   l2r <- newChan
   r2l <- newChan
 
-  fork $ flip runReaderT (l2r, r2l) $ sL crupt (z2aL, a2zL) (p2aL, a2pL) (f2aL, a2fL)
-  fork $ flip runReaderT (r2l, l2r) $ sR crupt (z2aR, a2zR) (p2aR, a2pR) (f2aR, a2fR)
+  fork $ let {?duplexWrite = writeChan l2r; ?duplexRead = readChan r2l } in
+           sL crupt (z2aL, a2zL) (p2aL, a2pL) (f2aL, a2fL)
+  fork $ let {?duplexWrite = writeChan r2l; ?duplexRead = readChan l2r } in
+           sR crupt (z2aR, a2zR) (p2aR, a2pR) (f2aR, a2fR)
   return ()
-
-
-
+--}

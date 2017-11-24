@@ -1,5 +1,4 @@
- {-# LANGUAGE ScopedTypeVariables, ImplicitParams
-  #-} 
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams #-} 
 
 module Multicast where
 

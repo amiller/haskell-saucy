@@ -109,7 +109,7 @@ execUC
                   -> (Chan a2f, Chan f2a)
                   -> (Chan z2f, Chan f2z)
                   -> m ())
-       -> ((?sid::SID) => Crupt
+       -> ((?sid::SID, ?pass::m ()) => Crupt
                   -> (Chan z2a, Chan a2z)
                   -> (Chan (PID, f2p), Chan (PID, p2f))
                   -> (Chan f2a, Chan a2f)
@@ -238,6 +238,7 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan f2a >>= writeChan a2z . SttCruptA2Z_F2A
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2A
   return ()
+
 
 voidAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >> ?pass

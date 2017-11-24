@@ -1,4 +1,4 @@
- {-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, ImplicitParams
+ {-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, ImplicitParams, FlexibleContexts
   #-} 
 
 module ACast where
@@ -130,7 +130,7 @@ readBangAnyOrder f2p = do
     writeChan c m
   return c
 
-protACast :: (HasFork m, ?sid:SID) =>
+protACast :: (HasFork m, ?sid::SID) =>
      PID
      -> (Chan (ACastP2F String), Chan (ACastF2P String))
      -> (Chan (BothF2P (SID, MulticastF2P (ACastMsg String)) (SID, SignatureF2P)),
@@ -261,7 +261,7 @@ splitBothP (f2p, p2f) = do
 
 
 testEnvACast
-  :: (MonadDefault m) =>
+  :: (HasFork m, ?pass::m ()) =>
      Chan SttCrupt_SidCrupt
      -> (Chan (PID, ACastF2P String), Chan (PID, ACastP2F String))
      -> (Chan a, Chan b)
@@ -277,15 +277,15 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     (pid, m) <- readChan p2z
     liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " -- ++ show m 
-    pass
+    ?pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
+    ?pass
 
   -- Have Alice write a message
   () <- readChan pump 
@@ -307,7 +307,7 @@ testACastReal :: IO String
 testACastReal = runRand $ execUC 
   testEnvACast 
   (runAsyncP $ runLeakP $ protACast) 
-  (runAsyncF $ runLeakF $ alterSIDF (\(tag,conf) -> (tag, show ("",""))) $ 
+  (runAsyncF $ runLeakF $ let (tag,conf) = ?sid in let ?sid = (tag, show ("","")) in
                  runBothF
                  (bangF fMulticast)
                  (bangF $ fSignature defaultSignature))

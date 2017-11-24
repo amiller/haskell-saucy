@@ -1,4 +1,4 @@
- {-# LANGUAGE ScopedTypeVariables, ImplicitParams, Rank2Types
+{-# LANGUAGE ScopedTypeVariables, ImplicitParams, Rank2Types
   #-} 
 
 -- Allow a functionality to leak messages to the adversary
@@ -62,8 +62,8 @@ runLeakF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fLeak (runLeakF' f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
 
-runLeakP :: ((?sid::SID), HasFork m) =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
+runLeakP :: (?sid::SID, HasFork m) =>
+     ((?sid::SID) => PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))

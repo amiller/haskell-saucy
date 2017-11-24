@@ -196,7 +196,7 @@ runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 runAsyncP :: (HasFork m, (?sid::SID)) =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
+     ((?sid::SID) => PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
@@ -257,7 +257,7 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 {-- Example environment using fAuth --}
 
 testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-  let sid = ("sidTestAuthAsync", show ("Alice", "Bob", ""))
+  let sid = ("sidTestAuthAsync", show ("", show ("", show ("Alice", "Bob", ""))))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     x <- readChan p2z
