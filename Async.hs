@@ -1,5 +1,5 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, MultiParamTypeClasses
+ {-# LANGUAGE ImplicitParams, ScopedTypeVariables, MultiParamTypeClasses,
+     Rank2Types
   #-} 
 
 
@@ -15,8 +15,6 @@ import Multisession
 import Safe
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
-import Control.Monad.State
-import Control.Monad.Reader
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
@@ -40,22 +38,19 @@ import qualified Data.Map.Strict as Map
         Synchronous protocols are just ones where the parties have access to getRound
  --}
 
-class HasFork m => MonadAsync m where
-    registerCallback :: m (Chan ())
-
 byNextRound m = do
-  c <- registerCallback
+  c <- ?registerCallback
   fork $ readChan c >> m
   return ()
 
-withinNRounds :: (MonadAsync m) => m () -> Integer -> m () -> m ()
+withinNRounds :: (HasFork m, ?registerCallback :: m (Chan ())) => m () -> Integer -> m () -> m ()
 withinNRounds _ 1 m = do
-  c <- registerCallback
+  c <- ?registerCallback
   fork $ readChan c >> m
   return ()
 withinNRounds def n m = do
   assert (n >= 1) "withinNRounds must be called with n >= 1"
-  c <- registerCallback
+  c <- ?registerCallback
   fork $ readChan c >> withinNRounds def (n-1) m >> def
   return ()
 
@@ -76,6 +71,8 @@ type Round = Int
 {-- Types of messages exchanged with the clock --}
 data ClockA2F = ClockA2F_GetState | ClockA2F_Deliver Int Int deriving Show
 data ClockF2A = ClockF2A_RoundOK PID | ClockF2A_State Int (Map PID Bool) deriving Show
+data ClockF2Z = ClockF2Z_Round Int deriving Show
+data ClockZ2F = ClockZ2F_MakeProgress deriving Show
 data ClockPeerIn = ClockPeerIn_Register deriving Show
 data ClockPeerOut = ClockPeerOut_Registered CallbackID | ClockPeerOut_Callback CallbackID deriving Show
 
@@ -100,11 +97,11 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
                      let callback = rbuf !! idx
                      let rbuf' = deleteAtIndex idx rbuf
                      writeIORef buffer (Map.insert r rbuf' buf)
-                     duplexWrite $ ClockPeerOut_Callback callback
+                     ?duplexWrite $ ClockPeerOut_Callback callback
 
   -- Functionality on other side of duplex can register callbacks for the next round
   fork $ forever $ do
-    ClockPeerIn_Register <- duplexRead
+    ClockPeerIn_Register <- ?duplexRead
     cbid <- readIORef cbCounter
     writeIORef cbCounter (cbid+1)
     r <- readIORef round
@@ -112,7 +109,7 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     let rbuf = Map.findWithDefault [] (r+1) buf
     let rbuf' = rbuf ++ [cbid]
     writeIORef buffer (Map.insert (r+1) rbuf' buf )
-    duplexWrite $ ClockPeerOut_Registered cbid
+    ?duplexWrite $ ClockPeerOut_Registered cbid
                                  
   -- Allow the environment to force progress along
   fork $ forever $ do
@@ -127,7 +124,7 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         let cb = rbuf !! 0
         writeIORef buffer $ Map.insert r (drop 1 rbuf) buf
         liftIO $ putStrLn $ "[fAsync] sending callback"
-        duplexWrite $ ClockPeerOut_Callback cb
+        ?duplexWrite $ ClockPeerOut_Callback cb
     else do
         -- Advance the round
         writeIORef buffer $ Map.delete r buf
@@ -143,40 +140,25 @@ fClock crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 {-- Implementation of MonadAsync --}
 {--
   Our model of asynchronous protocols is built around an idealized "clock" functionality, fClock
-  The MonadAsync programming abstraction is implemented in terms of commuication with this functionality.
  --}
-type AsyncFuncT = ReaderT (Chan (Chan ()))
 
---instance Monad m => MonadReader SID (ReaderT SID m) where
+--instance {-# OVERLAPS #-} (MonadReader (Chan (Chan ())) m, MonadDuplex ClockPeerIn ClockPeerOut m) => MonadAsync m where
+--    registerCallback = do
+--      reg :: Chan (Chan ()) <- ask
+--      duplexWrite ClockPeerIn_Register
+--      cb <- readChan reg
+--      return cb
 
-instance {-# OVERLAPS #-} MonadReader a m => MonadReader a (ReaderT b m) where
-    ask = lift ask
-    local f m = undefined --lift (local f (lift m))
---    getSID = lift getSID
-
---instance MonadSID m => MonadSID (AsyncFuncT m) where
---    getSID = getSID
-{-
-instance MonadDuplex ClockPeerIn ClockPeerOut m => MonadAsync (AsyncFuncT m) where
-    registerCallback = do
-      reg :: Chan (Chan ()) <- ask
-      lift $ duplexWrite ClockPeerIn_Register
-      cb <- readChan reg
-      return cb
--}
-instance {-# OVERLAPS #-} (MonadReader (Chan (Chan ())) m, MonadDuplex ClockPeerIn ClockPeerOut m) => MonadAsync m where
-    registerCallback = do
-      reg :: Chan (Chan ()) <- ask
-      duplexWrite ClockPeerIn_Register
-      cb <- readChan reg
-      return cb
-
+_runAsyncF :: (HasFork m, ?duplexWrite::ClockPeerIn -> m (),
+            ?duplexRead::m ClockPeerOut) =>
+          ((?registerCallback :: m (Chan ())) => p -> (a2, b1) -> (a3, b2) -> (Chan a4, Chan a5) -> m b3)
+               -> p -> (a2, b1) -> (a3, b2) -> (a6, b4) -> m b3
 _runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   callbacks <- newIORef empty
   reg <- newChan
   -- Create a new thread to handle callbacks
   fork $ forever $ do
-    mf <- duplexRead
+    mf <- ?duplexRead
     case mf of
       ClockPeerOut_Registered cb -> do
                      liftIO $ putStrLn $ "[_runAsyncF] creating callback" ++ show cb
@@ -192,14 +174,19 @@ _runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   z2f' <- newChan
   f2z' <- newChan
-  runReaderT (f crupt (p2f, f2p) (a2f, f2a) (z2f', f2z')) reg
+  let ?registerCallback = do
+        ?duplexWrite ClockPeerIn_Register
+        cb <- readChan reg
+        return cb
+    in f crupt (p2f, f2p) (a2f, f2a) (z2f', f2z')
 
-runAsyncF :: (HasFork m, MonadSID m) =>
-     (Map PID ()
+
+runAsyncF :: (HasFork m, (?sid::SID)) =>
+     ((?sid::SID, ?registerCallback:: m (Chan ())) => Map PID ()
       -> (Chan (PID, t3), Chan (PID, b))
       -> (Chan a2f, Chan f2a)
       -> (Chan z2f, Chan f2z)
-      -> AsyncFuncT (DuplexT ClockPeerIn ClockPeerOut (SIDMonadT m)) ())
+      -> m ())
      -> Map PID ()
      -> (Chan (PID, DuplexP2F Void t3), Chan (PID, DuplexF2P Void b))
      -> (Chan (DuplexA2F ClockA2F a2f), Chan (DuplexF2A ClockF2A f2a))
@@ -208,8 +195,9 @@ runAsyncF :: (HasFork m, MonadSID m) =>
 runAsyncF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   runDuplexF fClock (_runAsyncF f) crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
-runAsyncP :: (MonadSID m, HasFork m) =>
-     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> SIDMonadT m ())
+
+runAsyncP :: (HasFork m, (?sid::SID)) =>
+     (PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
      -> PID
      -> (Chan z2p, Chan p2z)
      -> (Chan (DuplexF2P Void f2p), Chan (DuplexP2F Void p2f))
@@ -236,10 +224,10 @@ runAsyncP p pid (z2p, p2z) (f2p, p2f) = do
 
 data FAuthF2P a = FAuthF2P_OK | FAuthF2P_Deliver a deriving (Eq, Read, Show)
 
-fAuth :: (MonadAsync m, MonadLeak a m, MonadSID m) =>
+fAuth :: (HasFork m, ?sid::SID, ?leak::a -> m (), ?registerCallback::m (Chan ())) =>
      Map PID ()
      -> (Chan (PID, a), Chan (PID, FAuthF2P a))
-     -> (Chan Void, Chan Void)
+     -> (Chan Void, Chan Void) 
      -> (Chan Void, Chan Void)
      -> m ()
 fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
@@ -261,7 +249,7 @@ fAuth crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     else do
       writeIORef recorded True
       liftIO $ putStrLn $ "fAuth: notifying adv"
-      leak m
+      ?leak m
       byNextRound $ writeChan f2p (pidR, FAuthF2P_Deliver m)
     writeChan f2p (pidS, FAuthF2P_OK)
 
@@ -275,17 +263,17 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show (m :: (SttCruptA2Z
                            (DuplexF2P Void (DuplexF2P Void (FAuthF2P String)))
                            (DuplexF2A ClockF2A (DuplexF2A (LeakF2A String) Void))))
-    pass
+    ?pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
+    ?pass
 
   -- Have Alice write a message
   () <- readChan pump 
@@ -306,15 +294,11 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
-
---instance MonadAsync m => MonadAsync (LeakFuncT a m) where
---    registerCallback = lift registerCallback
-
 testAuthAsync :: IO String
 testAuthAsync = runRand $ execUC testEnvAuthAsync (runAsyncP idealProtocol) (runAsyncF $ runLeakF fAuth) dummyAdversary
 
 
-
+{--
 
 
 {-- Example environments using !fAuth --}
@@ -377,3 +361,4 @@ testBangAsync = runRand $ execUC testEnvBangAsync (runAsyncP $ runLeakP idealPro
 
 
 
+-}
