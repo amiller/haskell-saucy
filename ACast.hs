@@ -1,5 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams, FlexibleContexts
   #-} 
 
 module ACast where
@@ -17,20 +16,18 @@ import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
-import Control.Monad.State
-import Control.Monad.Reader
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
-{- fACast: an asynchronous broadcast functionality -}
+{- fACast: an asynchronous broadcast functionality, Bracha's Broadcast -}
 {-
    Narrative description:
    - Each party inputs a message (of type `a`, a parameter)
    - This functionality inlines an assumption on the fault tolerance
      TODO: Express `assume n>3t` as a generic functionality operator
-   - If `a`
+   - If `a` 
  -}
 
 data ACastP2F a = ACastP2F_Input a deriving Show
@@ -41,7 +38,7 @@ data ACastF2A a = ACastF2A_Advance deriving Show
 assertNothing Nothing = return ()
 assertNothing _ = fail "Not nothing"
 
-fACast :: (MonadSID m, MonadLeak a m, MonadAsync m) =>
+fACast :: (HasFork m, ?leak::a -> m (), ?registerCallback::m (Chan ()), ?sid::SID) =>
      Crupt
      -> (Chan (PID, ACastP2F a), Chan (PID, ACastF2P a))
      -> (Chan Void, Chan (ACastF2A a))
@@ -133,7 +130,7 @@ readBangAnyOrder f2p = do
     writeChan c m
   return c
 
-protACast :: (MonadSID m, HasFork m) =>
+protACast :: (HasFork m, ?sid::SID) =>
      PID
      -> (Chan (ACastP2F String), Chan (ACastF2P String))
      -> (Chan (BothF2P (SID, MulticastF2P (ACastMsg String)) (SID, SignatureF2P)),
@@ -264,7 +261,7 @@ splitBothP (f2p, p2f) = do
 
 
 testEnvACast
-  :: (MonadDefault m) =>
+  :: (HasFork m, ?pass::m ()) =>
      Chan SttCrupt_SidCrupt
      -> (Chan (PID, ACastF2P String), Chan (PID, ACastP2F String))
      -> (Chan a, Chan b)
@@ -280,15 +277,15 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     (pid, m) <- readChan p2z
     liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " -- ++ show m 
-    pass
+    ?pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
+    ?pass
 
   -- Have Alice write a message
   () <- readChan pump 
@@ -310,7 +307,7 @@ testACastReal :: IO String
 testACastReal = runRand $ execUC 
   testEnvACast 
   (runAsyncP $ runLeakP $ protACast) 
-  (runAsyncF $ runLeakF $ alterSIDF (\(tag,conf) -> (tag, show ("",""))) $ 
+  (runAsyncF $ runLeakF $ let (tag,conf) = ?sid in let ?sid = (tag, show ("","")) in
                  runBothF
                  (bangF fMulticast)
                  (bangF $ fSignature defaultSignature))

@@ -1,6 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
-  #-} 
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams #-} 
 
 module Multicast where
 
@@ -14,8 +12,6 @@ import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
-import Control.Monad.State
-import Control.Monad.Reader
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (member, empty, insert, Map)
@@ -29,10 +25,7 @@ data MulticastF2P a = MulticastF2P_OK | MulticastF2P_Deliver a deriving Show
 data MulticastF2A a = MulticastF2A a deriving Show
 data MulticastA2F a = MulticastA2F_Deliver PID a deriving Show
 
---instance (MonadSID m) => MonadLeak String (LeakFuncT (SID, String) m) where
---    leak x = lift getSID >>= \sid -> lift $ leak (sid, x)
-
-fMulticast :: (MonadSID m, MonadLeak t m, MonadAsync m) =>
+fMulticast :: (HasFork m, ?sid::SID, ?leak::t -> m (), ?registerCallback:: m (Chan ())) =>
      Crupt
      -> (Chan (PID, t), Chan (PID, MulticastF2P t))
      -> (Chan (MulticastA2F t), Chan (MulticastF2A t))
@@ -48,7 +41,7 @@ fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
       fork $ forever $ do
         (pid, m) <- readChan p2f
         if pid == pidS then do
-          leak m
+          ?leak m
           forMseq_ parties $ \pidR -> do
              byNextRound $ writeChan f2p (pidR, MulticastF2P_Deliver m)
           writeChan f2p (pidS, MulticastF2P_OK)
@@ -67,7 +60,7 @@ fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 {-- An !fAuth hybrid protocol realizing fMulticast --}
-protMulticast :: (MonadSID m, HasFork m) =>
+protMulticast :: (?sid::SID, HasFork m) =>
      PID
      -> (Chan t, Chan (MulticastF2P t))
      -> (Chan (SID, FAuthF2P t),
@@ -148,7 +141,7 @@ simMulticast crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   return ()
 
 testEnvMulticast
-  :: (MonadDefault m) =>
+  :: (HasFork m, ?pass::m()) =>
      Chan SttCrupt_SidCrupt
      -> (Chan (PID, MulticastF2P String), Chan (PID, String))
      -> (Chan (SttCruptA2Z
@@ -169,15 +162,15 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     (pid, m) <- readChan p2z
     liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show m 
-    pass
+    ?pass
   fork $ forever $ do
     DuplexF2Z_Left f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
-    pass
+    ?pass
 
   -- Have Alice write a message
   () <- readChan pump 

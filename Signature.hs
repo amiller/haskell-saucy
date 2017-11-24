@@ -1,6 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
-  
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams
   #-} 
 
 {-
@@ -58,7 +56,7 @@
 
   Things this model captures:
   - PKI:
-     Keygen is implicitly
+     Keygen is implicitly bound to PID
 
   - Unforgeability:
      If the signer is honest, then an attacker cannot create a valid signature on m unless m has previousy been signed.
@@ -70,10 +68,10 @@
      A signing query is guaranteed to return a verifying signature
 
   - Non-verifiable keygen:
-     If the signer is corrupted, no guarantees are made
+     If the signer is corrupted, no guarantees are made about the unforgeability of such signatures
 
-  - No hidden information:
-     The signing algorithm is stateless, so it does not reveal any information about which messages have been signed or not
+  - No information leakage
+     The signing algorithm is pure (does not modify functionality state), so it does not reveal any information about which messages have been signed or not
 
   - [CL2006] On Signatures of Knowledge http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.75.1454&rep=rep1&type=pdf
     Appendix B explains the story of signatures.
@@ -90,8 +88,6 @@ import StaticCorruptions
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
-import Control.Monad.State
-import Control.Monad.Reader
 import Safe
 
 import Data.IORef.MonadIO
@@ -108,23 +104,21 @@ data SignatureP2F a = SignatureP2F_Sign a |
 data SignatureF2P = SignatureF2P_OK | 
                     SignatureF2P_Sig SignatureSig |
                     SignatureF2P_Verify Bool deriving Show
-                                                                        
---data SignatureF2A a = SignatureF2A a deriving Show
---data SignatureA2F a = SignatureA2F_Deliver PID deriving Show
 
-defaultSignature :: HasFork m => 
+defaultSignature :: (HasFork m, ?getBit :: m Bool) => 
      (m (SignatureSK, SignaturePK),
       SignatureSK -> String -> m SignatureSig,
       SignaturePK -> String -> SignatureSig -> Bool)
 defaultSignature = (gen, sign, verify) where
     gen = return ("SK", "PK")
-    sign sk m = return "DEFAULTSIG"
-      -- rnd :: Integer <- get32bytes
-      -- return $ "DEFAULTSIG:" ++ show rnd
+    sign sk m = do
+      --return "DEFAULTSIG"
+      rnd :: Integer <- get32bytes
+      return $ "DEFAULTSIG:" ++ show rnd
     verify pk m sig = True
 
 
-fSignature :: (MonadSID m, HasFork m) =>
+fSignature :: (HasFork m, ?sid::SID) =>
      (m (SignatureSK, SignaturePK),
       SignatureSK -> String -> m SignatureSig,
       SignaturePK -> String -> SignatureSig -> Bool)
@@ -201,15 +195,15 @@ testEnvSig z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show (m :: SttCruptA2Z (SignatureF2P) Void)
-    pass
+    ?pass
   fork $ forever $ do
     f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show (f :: Void)
-    pass
+    ?pass
 
   -- Have Alice sign a message
   () <- readChan pump 
