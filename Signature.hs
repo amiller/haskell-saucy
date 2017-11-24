@@ -1,6 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
-  
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams
   #-} 
 
 {-
@@ -90,8 +88,6 @@ import StaticCorruptions
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever)
-import Control.Monad.State
-import Control.Monad.Reader
 import Safe
 
 import Data.IORef.MonadIO
@@ -124,7 +120,7 @@ defaultSignature = (gen, sign, verify) where
     verify pk m sig = True
 
 
-fSignature :: (MonadSID m, HasFork m) =>
+fSignature :: (HasFork m, ?sid::SID) =>
      (m (SignatureSK, SignaturePK),
       SignatureSK -> String -> m SignatureSig,
       SignaturePK -> String -> SignatureSig -> Bool)
@@ -201,15 +197,15 @@ testEnvSig z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     x <- readChan p2z
     liftIO $ putStrLn $ "Z: p sent " ++ show x
-    pass
+    ?pass
   fork $ forever $ do
     m <- readChan a2z
     liftIO $ putStrLn $ "Z: a sent " ++ show (m :: SttCruptA2Z (SignatureF2P) Void)
-    pass
+    ?pass
   fork $ forever $ do
     f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show (f :: Void)
-    pass
+    ?pass
 
   -- Have Alice sign a message
   () <- readChan pump 

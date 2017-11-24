@@ -1,5 +1,4 @@
- {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, OverlappingInstances, MultiParamTypeClasses
+ {-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, ImplicitParams
   #-} 
 
 module ACast where
@@ -17,8 +16,6 @@ import Safe
 
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
-import Control.Monad.State
-import Control.Monad.Reader
 
 import Data.IORef.MonadIO
 import Data.Map.Strict (Map)
@@ -41,7 +38,7 @@ data ACastF2A a = ACastF2A_Advance deriving Show
 assertNothing Nothing = return ()
 assertNothing _ = fail "Not nothing"
 
-fACast :: (MonadSID m, MonadLeak a m, MonadAsync m) =>
+fACast :: (HasFork m, ?leak::a -> m (), ?registerCallback::m (Chan ()), ?sid::SID) =>
      Crupt
      -> (Chan (PID, ACastP2F a), Chan (PID, ACastF2P a))
      -> (Chan Void, Chan (ACastF2A a))
@@ -133,7 +130,7 @@ readBangAnyOrder f2p = do
     writeChan c m
   return c
 
-protACast :: (MonadSID m, HasFork m) =>
+protACast :: (HasFork m, ?sid:SID) =>
      PID
      -> (Chan (ACastP2F String), Chan (ACastF2P String))
      -> (Chan (BothF2P (SID, MulticastF2P (ACastMsg String)) (SID, SignatureF2P)),

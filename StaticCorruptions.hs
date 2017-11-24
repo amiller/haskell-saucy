@@ -109,7 +109,7 @@ execUC
                   -> (Chan a2f, Chan f2a)
                   -> (Chan z2f, Chan f2z)
                   -> m ())
-       -> (Crupt
+       -> ((?sid::SID) => Crupt
                   -> (Chan z2a, Chan a2z)
                   -> (Chan (PID, f2p), Chan (PID, p2f))
                   -> (Chan f2a, Chan a2f)
