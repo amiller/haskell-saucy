@@ -1,6 +1,5 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies
-  
+{-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies,
+  ImplicitParams, FlexibleInstances, FlexibleContexts, UndecidableInstances, Rank2Types
   #-} 
 
 
@@ -35,34 +34,20 @@ data DuplexA2P a b = DuplexA2P_Left a | DuplexA2P_Right b deriving Show
 data DuplexP2A a b = DuplexP2A_Left a | DuplexP2A_Right b deriving Show
 
 
--- Allow duplex communication
-class HasFork m => MonadDuplex a b m | m -> a b where
-    duplexWrite :: a -> m ()
-    duplexRead  ::      m b
-
-data DuplexSentinel = DuplexSentinel
-
-type DuplexT a b = ReaderT (Chan a, Chan b)
-
-instance (HasFork m, MonadReader (Chan a, Chan b) m) => MonadDuplex a b m where
-    duplexWrite a = ask >>= \(c, _) -> writeChan c a
-    duplexRead    = ask >>= \(_, c) -> readChan c
-
-
 -- Functionality wrapper
 
 runDuplexF
-  :: (MonadSID m, HasFork m) =>
-        (Crupt
-      -> (Chan (PID, p2fL), Chan (PID, f2pL))
-      -> (Chan a2fL, Chan f2aL)
-      -> (Chan z2fL, Chan f2zL)
-      -> DuplexT l2r r2l (SIDMonadT m) ())
-     -> (Crupt
-         -> (Chan (PID, p2fR), Chan (PID, f2pR))
-         -> (Chan a2fR, Chan f2aR)
-         -> (Chan z2fR, Chan f2zR)
-         -> DuplexT r2l l2r (SIDMonadT m) ())
+  :: ((?sid::SID), HasFork m) =>
+      ((?duplexWrite :: a -> m (), ?duplexRead :: m b) => Crupt
+       -> (Chan (PID, p2fL), Chan (PID, f2pL))
+       -> (Chan a2fL, Chan f2aL)
+       -> (Chan z2fL, Chan f2zL)
+       -> m ())
+   -> ((?duplexWrite :: b -> m (), ?duplexRead :: m a) => Crupt
+       -> (Chan (PID, p2fR), Chan (PID, f2pR))
+       -> (Chan a2fR, Chan f2aR)
+       -> (Chan z2fR, Chan f2zR)
+       -> m ())
      -> Crupt
      -> (Chan (PID, DuplexP2F p2fL p2fR), Chan (PID, DuplexF2P f2pL f2pR))
      -> (Chan (DuplexA2F a2fL a2fR), Chan (DuplexF2A f2aL f2aR))
@@ -112,15 +97,30 @@ runDuplexF fL fR crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   let  leftSID = extendSID sid "DuplexLeft"   leftConf
   let rightSID = extendSID sid "DuplexRight" rightConf
 
-  fork $ runSID  leftSID $ flip runReaderT (l2r, r2l) $ fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
-  fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
+  fork $ runSID  leftSID $ let {?duplexWrite = writeChan l2r; ?duplexRead = readChan r2l} in
+                             fL crupt (p2fL, f2pL) (a2fL, f2aL) (z2fL, f2zL)
+  fork $ runSID rightSID $ let {?duplexWrite = writeChan r2l; ?duplexRead = readChan l2r} in
+                             fR crupt (p2fR, f2pR) (a2fR, f2aR) (z2fR, f2zR)
   return ()
 
 
 {-- Duplex *protocols* 
  --}
 
-
+runDuplexP
+  :: ((?sid::SID), HasFork m) =>
+      ((?duplexWrite :: a -> m (), ?duplexRead :: m b) => PID
+       -> (Chan z2pL, Chan p2zL)
+       -> (Chan f2pL, Chan p2fL)
+       -> m ())
+   -> ((?duplexWrite :: b -> m (), ?duplexRead :: m a) => PID
+       -> (Chan z2pR, Chan p2zR)
+       -> (Chan f2pR, Chan p2fR)
+       -> m ())
+     -> PID
+     -> (Chan (DuplexZ2P z2pL z2pR), Chan (DuplexP2Z p2zL p2zR))
+     -> (Chan (DuplexF2P f2pL f2pR), Chan (DuplexP2F p2fL p2fR))
+     -> m ()
 runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
 
   z2pL <- newChan
@@ -134,8 +134,8 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
 
   fork $ forever $ do
     mf <- readChan z2p
-    case mf of DuplexP2F_Left  m -> writeChan z2pL m
-               DuplexP2F_Right m -> writeChan z2pR m
+    case mf of DuplexZ2P_Left  m -> writeChan z2pL m
+               DuplexZ2P_Right m -> writeChan z2pR m
 
   fork $ forever $ do
     mf <- readChan f2p
@@ -151,8 +151,10 @@ runDuplexP pL pR pid (z2p, p2z) (f2p, p2f) = do
   let  leftSID = extendSID sid "DuplexLeft"   leftConf
   let rightSID = extendSID sid "DuplexRight" rightConf
 
-  fork $ runSID  leftSID $ flip runReaderT (l2r, r2l) $ pL pid (z2pL, p2zL) (f2pL, p2fL)
-  fork $ runSID rightSID $ flip runReaderT (r2l, l2r) $ pR pid (z2pR, p2zR) (f2pR, p2fR)
+  fork $ runSID  leftSID $ let {?duplexWrite=writeChan l2r; ?duplexRead=readChan r2l} in
+                             pL pid (z2pL, p2zL) (f2pL, p2fL)
+  fork $ runSID rightSID $ let {?duplexWrite=writeChan r2l; ?duplexRead=readChan l2r} in
+                             pR pid (z2pR, p2zR) (f2pR, p2fR)
   return ()
 
 
