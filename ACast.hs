@@ -1,4 +1,4 @@
- {-# LANGUAGE ScopedTypeVariables, MultiParamTypeClasses, ImplicitParams, FlexibleContexts
+ {-# LANGUAGE ScopedTypeVariables, ImplicitParams, FlexibleContexts
   #-} 
 
 module ACast where
@@ -21,13 +21,13 @@ import Data.IORef.MonadIO
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
-{- fACast: an asynchronous broadcast functionality -}
+{- fACast: an asynchronous broadcast functionality, Bracha's Broadcast -}
 {-
    Narrative description:
    - Each party inputs a message (of type `a`, a parameter)
    - This functionality inlines an assumption on the fault tolerance
      TODO: Express `assume n>3t` as a generic functionality operator
-   - If `a`
+   - If `a` 
  -}
 
 data ACastP2F a = ACastP2F_Input a deriving Show

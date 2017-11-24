@@ -56,7 +56,7 @@
 
   Things this model captures:
   - PKI:
-     Keygen is implicitly
+     Keygen is implicitly bound to PID
 
   - Unforgeability:
      If the signer is honest, then an attacker cannot create a valid signature on m unless m has previousy been signed.
@@ -68,10 +68,10 @@
      A signing query is guaranteed to return a verifying signature
 
   - Non-verifiable keygen:
-     If the signer is corrupted, no guarantees are made
+     If the signer is corrupted, no guarantees are made about the unforgeability of such signatures
 
-  - No hidden information:
-     The signing algorithm is stateless, so it does not reveal any information about which messages have been signed or not
+  - No information leakage
+     The signing algorithm is pure (does not modify functionality state), so it does not reveal any information about which messages have been signed or not
 
   - [CL2006] On Signatures of Knowledge http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.75.1454&rep=rep1&type=pdf
     Appendix B explains the story of signatures.
@@ -104,19 +104,17 @@ data SignatureP2F a = SignatureP2F_Sign a |
 data SignatureF2P = SignatureF2P_OK | 
                     SignatureF2P_Sig SignatureSig |
                     SignatureF2P_Verify Bool deriving Show
-                                                                        
---data SignatureF2A a = SignatureF2A a deriving Show
---data SignatureA2F a = SignatureA2F_Deliver PID deriving Show
 
-defaultSignature :: HasFork m => 
+defaultSignature :: (HasFork m, ?getBit :: m Bool) => 
      (m (SignatureSK, SignaturePK),
       SignatureSK -> String -> m SignatureSig,
       SignaturePK -> String -> SignatureSig -> Bool)
 defaultSignature = (gen, sign, verify) where
     gen = return ("SK", "PK")
-    sign sk m = return "DEFAULTSIG"
-      -- rnd :: Integer <- get32bytes
-      -- return $ "DEFAULTSIG:" ++ show rnd
+    sign sk m = do
+      --return "DEFAULTSIG"
+      rnd :: Integer <- get32bytes
+      return $ "DEFAULTSIG:" ++ show rnd
     verify pk m sig = True
 
 
