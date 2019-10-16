@@ -109,60 +109,6 @@ runEnvironment passer sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) z = do
           Left  () -> _run
           Right a  -> return a in _run
 
-{- Provides a default channel to send on, when no message is intended -}
-
-runDefault :: MonadIO m => Chan () -> ((?pass :: m ()) => m a) -> m a
-runDefault c f = let ?pass = writeChan c () in f
-
-
-runSID :: Monad m => SID -> ((?sid :: SID) => m a) -> m a
-runSID sid f = let ?sid = sid in f
-getSID :: (Monad m, ?sid :: SID) => m SID
-getSID = return ?sid
-
-
-alterSID :: Monad m => (SID -> SID) ->  ((?sid :: SID) => m a) -> ((?sid :: SID) => m a)
-alterSID f ma = do
-  sid <- getSID
-  runSID (f sid) $ ma
-
-
-{- Provide input () until a value is received -}
-runUntilOutput :: HasFork m => Chan () -> ((?pass :: m ()) => Chan () -> Chan a -> m ()) -> m a
-runUntilOutput dump p = do
-  pump <- newChan
-  outp <- newChan
-  fork $ runDefault dump $ p pump outp
-  c <- multiplex dump outp
-  let _run = do
-        writeChan pump ()
-        o <- readChan c
-        case o of 
-          Left  () -> _run
-          Right a  -> return a in _run
-
-
-test3 :: (HasFork m, ?pass :: m (), ?getBit :: m Bool) => Chan () -> Chan Int -> m ()
-test3 pump outp = test3' 0 where
-    test3' n = do
-      () <- readChan pump
-      b1 <- ?getBit
-      b2 <- ?getBit
-      b3 <- ?getBit
-      b4 <- ?getBit
-      --lift $ putStrLn $ show [b1,b2,b3,b4];
-      if (b1 == b2 && b2 == b3 && b3 == b4 && b4 == True) then
-          writeChan outp n
-      else
-          ?pass;
-          test3' (n+1)
-
-test3run :: IO [Int]
-test3run = do
-  dump <- newChan
-  replicateM 10 $ runRandIO $ runUntilOutput dump test3
-
-
 
 {- UC Experiments -}
 execUC

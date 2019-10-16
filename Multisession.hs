@@ -45,7 +45,6 @@ bangF f (p2f, f2p) (a2f, f2a) _ = do
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
   a2ssid <- newIORef empty
-  sid <- getSID
 
   let newSsid ssid = do
         --liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new subinstance with ssid: " ++ show ssid
@@ -90,10 +89,8 @@ bangP p (z2p, p2z) (f2p, p2f) = do
   z2ssid <- newIORef empty
   f2ssid <- newIORef empty
 
-  sid <- getSID
-
   let newSsid ssid = do
-        liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new protocol subinstance with ssid: " ++ show ssid
+        liftIO $ putStrLn $ "[" ++ show ?sid ++ "] Creating new protocol subinstance with ssid: " ++ show ssid
         let newSsid' _2ssid p2_ tag = do
                      pp2_ <- newChan;
                      _2pp <- newChan;
@@ -105,7 +102,7 @@ bangP p (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ let ?sid = (extendSID sid (fst ssid) (snd ssid)) in
+        fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in
           p z f
         return ()
 
