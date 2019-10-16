@@ -56,7 +56,8 @@ import System.Random
 type MonadITM m = (HasFork m,
                    ?getBit :: m Bool,
                    ?secParam :: Int,
-                   ?getTokens :: m Int)
+                   ?getTokens :: m Int,
+                   ?tick :: m ())
 
 getBit :: MonadITM m => m Bool
 getBit = ?getBit
@@ -220,7 +221,10 @@ runSecParam k p =
 
 runITMinIO :: Int -> (forall m. MonadITM m => m a) -> IO a
 runITMinIO k p = do
-  runSecParam k $ runRandIO $ let ?getTokens = undefined in p
+  runSecParam k $ runRandIO $
+    let ?getTokens = undefined in
+      let ?tick = undefined in
+        p
 
 
 {- Examples -}
@@ -283,10 +287,6 @@ test2run = runITMinIO 120 test2
 
 {- More Features -}
 
-{- Provides a default channel to send on, when no message is intended -}
-
-runDefault :: MonadIO m => Chan () -> ((?pass :: m ()) => m a) -> m a
-runDefault c f = let ?pass = writeChan c () in f
 
 
 {- run-time checking of a condition or throw exception -}

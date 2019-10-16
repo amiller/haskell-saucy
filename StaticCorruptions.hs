@@ -1,6 +1,5 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances,
-  ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies,
-  ImplicitParams, Rank2Types
+{-# LANGUAGE Rank2Types, ImplicitParams, ConstraintKinds,
+             ScopedTypeVariables
   #-} 
 
 {- 
@@ -43,8 +42,78 @@ type PID = String
 -- Corruption maps
 type Crupt = Map PID ()
 
+{-- Functionality class --}
+type MonadFunctionality m =
+  (MonadITM m,
+    ?sid :: SID,
+    ?crupt :: Crupt)
+  
+type Functionality p2f f2p a2f f2a z2f f2z m = MonadFunctionality m => (Chan (PID, p2f), Chan (PID, f2p)) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
 
-type Functionality p2f f2p a2f f2a z2f f2z m = Crupt -> (Chan p2f, Chan f2p) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> m ()
+
+runFunctionality :: MonadITM m => SID -> Crupt -> (Chan (PID, p2f), Chan (PID, f2p)) -> (Chan a2f, Chan f2a) -> (Chan z2f, Chan f2z) -> (MonadFunctionality m => Functionality p2f f2p a2f f2a z2f f2z m) -> m ()
+runFunctionality sid crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) f =
+  let ?sid = sid
+      ?crupt = crupt in f (p2f, f2p) (a2f, f2a) (z2f, f2z)
+
+
+{-- Party class --}
+type MonadProtocol m =
+   (MonadITM m,
+    ?sid :: SID,
+    ?pid :: PID)
+
+type Protocol z2p p2z f2p p2f m = MonadProtocol m => (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ()
+
+runProtocol :: MonadITM m => SID -> PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> (MonadProtocol m => Protocol z2p p2z f2p p2f m) -> m ()
+runProtocol sid pid (z2p, p2z) (f2p, p2f) pi =
+  let ?sid = sid
+      ?pid = pid in pi (z2p, p2z) (f2p, p2f)
+
+
+{-- Adversary Class --}
+type MonadAdversary m =
+  (MonadITM m,
+   ?sid :: SID,
+   ?pass :: m ())
+
+type Adversary z2a a2z f2p p2f f2a a2f m = MonadAdversary m => (Chan z2a, Chan a2z) -> (Chan (PID, f2p), Chan (PID, p2f)) -> (Chan f2a, Chan a2f) -> m ()
+
+runAdversary :: MonadITM m => SID -> Crupt -> Chan () -> (Chan z2a, Chan a2z) -> (Chan (PID, f2p), Chan (PID, p2f)) -> (Chan f2a, Chan a2f) -> (MonadAdversary m => Adversary z2a a2z f2p p2f f2a a2f m) -> m ()
+runAdversary sid crupt passer (z2a, a2z) (p2a, a2p) (f2a, a2f) a =
+  let ?sid = sid
+      ?crupt = crupt
+      ?pass = writeChan passer () in a (z2a, a2z) (p2a, a2p) (f2a, a2f)
+
+
+{-- Environment Class --}
+type MonadEnvironment m =
+  (MonadITM m,
+   ?pass :: m ())
+
+
+type Environment p2z z2p a2z z2a f2z z2f outz m = MonadEnvironment m => Chan SttCrupt_SidCrupt -> (Chan (PID, p2z), Chan (PID, z2p)) -> (Chan a2z, Chan z2a) -> (Chan f2z, Chan z2f) -> Chan () -> Chan outz -> m ()
+
+
+runEnvironment :: MonadITM m => Chan () -> Chan SttCrupt_SidCrupt -> (Chan (PID, p2z), Chan (PID, z2p)) -> (Chan a2z, Chan z2a) -> (Chan f2z, Chan z2f) -> Environment p2z z2p a2z z2a f2z z2f outz m -> m outz
+runEnvironment passer sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) z = do
+  pump <- newChan
+  outp <- newChan
+  let ?pass = writeChan passer () in
+    fork $ z sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp
+  c <- multiplex passer outp
+  let _run = do
+        writeChan pump ()
+        o <- readChan c
+        case o of 
+          Left  () -> _run
+          Right a  -> return a in _run
+
+{- Provides a default channel to send on, when no message is intended -}
+
+runDefault :: MonadIO m => Chan () -> ((?pass :: m ()) => m a) -> m a
+runDefault c f = let ?pass = writeChan c () in f
+
 
 runSID :: Monad m => SID -> ((?sid :: SID) => m a) -> m a
 runSID sid f = let ?sid = sid in f
@@ -97,25 +166,11 @@ test3run = do
 
 {- UC Experiments -}
 execUC
-  :: HasFork m =>
-       ((?pass :: m ()) => Chan SttCrupt_SidCrupt
-             -> (Chan (PID, p2z), Chan (PID, z2p))
-                   -> (Chan a2z, Chan z2a)
-                   -> (Chan f2z, Chan z2f)
-                   -> Chan ()
-                   -> Chan outz
-                   -> m ())
-       -> ((?sid::SID) => PID -> (Chan z2p, Chan p2z) -> (Chan f2p, Chan p2f) -> m ())
-       -> ((?sid::SID) => Crupt
-                  -> (Chan (PID, p2f), Chan (PID, f2p))
-                  -> (Chan a2f, Chan f2a)
-                  -> (Chan z2f, Chan f2z)
-                  -> m ())
-       -> ((?sid::SID, ?pass::m ()) => Crupt
-                  -> (Chan z2a, Chan a2z)
-                  -> (Chan (PID, f2p), Chan (PID, p2f))
-                  -> (Chan f2a, Chan a2f)
-                  -> m ())
+  :: MonadITM m =>
+       (forall m. MonadEnvironment m => Environment p2z z2p a2z z2a f2z z2f outz m)
+       -> (forall m. MonadProtocol m => Protocol z2p p2z f2p p2f m)
+       -> (forall m. MonadFunctionality m => Functionality p2f f2p a2f f2a z2f f2z m)
+       -> (forall m. MonadAdversary m => Adversary z2a a2z f2p p2f f2a a2f m)
        -> m outz
 execUC z p f a = do
   {- 
@@ -135,19 +190,19 @@ execUC z p f a = do
 
   z2exec <- newChan
 
-  dump <- newChan
+  pass <- newChan
   
   fork $ do
     -- First, wait for the environment to choose an sid
     SttCrupt_SidCrupt sid crupt <- readChan z2exec
 
-    fork $ runSID sid $ f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z)
-    fork $ runSID sid $ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) 
-    -- reversing the order of dump and runSID breaks it??
-    fork $ runDefault dump $ runSID sid $ a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f)
+    fork $ runFunctionality sid crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) f
+    fork $ partyWrapper sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) p
+    fork $ runAdversary sid crupt pass (z2a, a2z) (p2a, a2p) (f2a, a2f) a
     return ()
 
-  runUntilOutput dump $ z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f)
+  runEnvironment pass z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) z
+
 
 data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID Crupt deriving Show
 
@@ -155,14 +210,15 @@ data SttCruptZ2A a b = SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Sho
 data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving Show
 
 
-partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
+{- Protocol party wrapper -}
+
+partyWrapper :: MonadITM m => SID -> Crupt -> (Chan (PID, z2p), Chan (PID, p2z)) -> (Chan (PID, f2p), Chan (PID, p2f)) -> (Chan (PID, p2f), Chan (PID, f2p)) -> (MonadProtocol m => Protocol z2p p2z f2p p2f m) -> m ()
+partyWrapper sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) p = do
   -- Store a table that maps each PID to a channel (z2p,f2p,a2p) used
   -- to communicate with that instance of the protocol
   z2pid <- newIORef empty
   f2pid <- newIORef empty
 
-  sid <- getSID
-  
   -- subroutine to install a new party
   let newPid pid = do
         liftIO $ putStrLn $ "[" ++ show sid ++ "] Creating new party with pid:" ++ pid
@@ -177,7 +233,7 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
                      return (_2pp, pp2_)
         z <- newPid' z2pid p2z "p2z"
         f <- newPid' f2pid p2f "p2f"
-        fork $ p pid z f
+        fork $ runProtocol sid pid z f p
         return ()
 
   -- Retrieve the {z2p,f2p,a2p} channel by PID (or install a new party if this is 
@@ -186,13 +242,15 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
         b <- return . member pid =<< readIORef _2pid
         if not b then newPid pid else return ()
         readIORef _2pid >>= return . (! pid)
+  
 
   -- Route messages from environment to honest parties
   fork $ forever $ do
     (pid, m) <- readChan z2p
     if member pid crupt then fail "env sent to corrupted party!" else return undefined
     --liftIO $ putStrLn $ "party wrapper z->p received"
-    getPid z2pid pid >>= flip writeChan m
+    _pid <- getPid z2pid pid
+    writeChan _pid m 
     
   -- Route messages from functionality to honest parties (or to Adv)
   fork $ forever $ do
@@ -221,7 +279,18 @@ partyWrapper p crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) = do
  Default / Ideal / Dummy  protocols and functionalities
  ----------------------------}
 
-idealProtocol pid (z2p, p2z) (f2p, p2f) = do
+dummyFunctionality (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+  fork $ forever $ do
+    (pid, m) <- readChan p2f
+    -- liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
+    writeChan (f2p) (pid, m)
+  fork $ forever $ do
+    m :: String <- readChan a2f
+    liftIO $ putStrLn $ "F: A sent " ++ m
+    writeChan (f2a) $ m
+  return ()
+
+idealProtocol (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     m <- readChan z2p
     --liftIO $ putStrLn $ "idealProtocol received from z2p " ++ pid
@@ -232,7 +301,7 @@ idealProtocol pid (z2p, p2z) (f2p, p2f) = do
     writeChan p2z m
   return ()
 
-dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+dummyAdversary (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
         SttCruptZ2A_A2F b        -> writeChan a2f b
@@ -241,24 +310,11 @@ dummyAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan p2a >>= writeChan a2z . SttCruptA2Z_P2A
   return ()
 
-
 voidAdversary crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >> ?pass
   fork $ forever $ readChan f2a >> ?pass
   fork $ forever $ readChan p2a >> ?pass
   return ()
-
-dummyFunctionality crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  fork $ forever $ do
-    (pid, m) <- readChan p2f
-    --liftIO $ putStrLn $ "F: [" ++ pid ++ "] " ++ show m
-    writeChan f2p (pid, m)
-  fork $ forever $ do
-    m :: String <- readChan a2f
-    --liftIO $ putStrLn $ "F: A sent " ++ m
-    writeChan f2a $ m
-  return ()
-
 
 
 testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
@@ -288,10 +344,7 @@ testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump
   writeChan z2a $ SttCruptZ2A_A2F "ok"
 
-testExec :: IO String
-testExec = runRandIO $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
---testExec = runRandIO $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
-
+testExec = runITMinIO 120 $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
 
 
 {- Dummy lemma -}
@@ -423,3 +476,4 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     (pid, m) <- readChan z2pZ
     if member pid crupt then fail "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
+
