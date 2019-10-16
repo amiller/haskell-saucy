@@ -32,7 +32,7 @@ deleteAtIndex index list = pref ++ (drop 1 suff)
 type SID = (String, String)
 
 -- Extends SID A with SID B... 
--- A is included in the prefix of A|B, but the configuration of B (the second element) is preserved in A|B
+-- A is included in the prefix of A|B, but the configuration of B (the second element) is not preserved in A|B
 extendSID :: SID -> String -> String -> SID
 --extendSID sid (tag, conf) = (show (sid, tag), conf)
 extendSID sid tag conf = (show (fst sid, tag), conf) -- This version drops the prior config
@@ -51,10 +51,11 @@ runSID sid f = let ?sid = sid in f
 getSID :: (Monad m, ?sid :: SID) => m SID
 getSID = return ?sid
 
---alterSIDF :: MonadSID m => (SID -> SID) -> Functionality p2f f2p a2f f2a z2f f2z (SIDMonadT m) -> Functionality p2f f2p a2f f2a z2f f2z m
---alterSIDF trans f crupt p a z = do
---  sid <- getSID
---  runSID (trans sid) $ f crupt p a z
+
+alterSID :: Monad m => (SID -> SID) ->  ((?sid :: SID) => m a) -> ((?sid :: SID) => m a)
+alterSID f ma = do
+  sid <- getSID
+  runSID (f sid) $ ma
 
 
 {- Provide input () until a value is received -}
@@ -70,6 +71,7 @@ runUntilOutput dump p = do
         case o of 
           Left  () -> _run
           Right a  -> return a in _run
+
 
 test3 :: (HasFork m, ?pass :: m (), ?getBit :: m Bool) => Chan () -> Chan Int -> m ()
 test3 pump outp = test3' 0 where
@@ -89,7 +91,7 @@ test3 pump outp = test3' 0 where
 test3run :: IO [Int]
 test3run = do
   dump <- newChan
-  replicateM 10 $ runRand $ runUntilOutput dump test3
+  replicateM 10 $ runRandIO $ runUntilOutput dump test3
 
 
 
@@ -287,8 +289,8 @@ testEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   writeChan z2a $ SttCruptZ2A_A2F "ok"
 
 testExec :: IO String
-testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
---testExec = runRand $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
+testExec = runRandIO $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
+--testExec = runRandIO $ execUC testEnv idealProtocol dummyFunctionality dummyAdversary
 
 
 
