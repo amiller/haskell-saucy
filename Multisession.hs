@@ -21,6 +21,9 @@ import Data.IORef.MonadIO
 import Data.Map.Strict
 import Safe
 
+
+data Void
+
 {- Multi-session extensions -}
 
 {-
@@ -34,18 +37,10 @@ import Safe
  -}
 
 bangF
-  :: (HasFork m, ?sid::SID) =>
-     ((?sid::SID) => Crupt
-      -> (Chan (PID, p2f), Chan (PID, f2p))
-      -> (Chan a2f, Chan f2a)
-      -> (Chan Void, Chan Void)
-      -> m ())
-     -> Crupt
-     -> (Chan (PID, (SID, p2f)), Chan (PID, (SID, f2p)))
-     -> (Chan (SID, a2f), Chan (SID, f2a))
-     -> (Chan Void, Chan Void)
-     -> m ()
-bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+  :: MonadITM m =>
+     (forall m. Functionality p2f f2p a2f f2a Void Void m) ->
+     Functionality (SID, p2f) (SID, f2p) (SID, a2f) (SID, f2a) Void Void m --}
+bangF f (p2f, f2p) (a2f, f2a) _ = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
@@ -66,7 +61,7 @@ bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        fork $ runSID (extendSID sid (fst ssid) (snd ssid)) $ f crupt p a (undefined, undefined)
+        fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in f p a (undefined, undefined)
         return ()
 
   let getSsid _2ssid ssid = do
@@ -87,8 +82,9 @@ bangF f crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     getSsid a2ssid ssid >>= flip writeChan m
   return ()
 
--- 
-bangP p pid (z2p, p2z) (f2p, p2f) = do
+
+--
+bangP p (z2p, p2z) (f2p, p2f) = do
   -- Store a table that maps each SSID to a channel (z2p,f2p) used
   -- to communicate with each subinstance of !p
   z2ssid <- newIORef empty
@@ -109,7 +105,8 @@ bangP p pid (z2p, p2z) (f2p, p2f) = do
                      return (_2pp, pp2_)
         z <- newSsid' z2ssid p2z "p2z"
         f <- newSsid' f2ssid p2f "p2f"
-        fork $ runSID (extendSID sid (fst ssid) (snd ssid)) $ p pid z f
+        fork $ let ?sid = (extendSID sid (fst ssid) (snd ssid)) in
+          p z f
         return ()
 
   let getSsid _2ssid ssid = do
@@ -165,13 +162,14 @@ testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
 
 testExecMulti :: IO String
-testExecMulti = runRand $ execUC testEnvMulti (bangP idealProtocol) (bangF dummyFunctionality) dummyAdversary
+testExecMulti = runITMinIO 120 $ execUC testEnvMulti (bangP idealProtocol) (bangF dummyFunctionality) dummyAdversary
+
 
 {- Squash Theorem -}
 {- !F -> !!F -}
 {- (squash,!F) ~ (idealP,!!F) -}
 
-squash pid (z2p, p2z) (f2p, p2f) = do
+squash (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     (ssid :: SID, (sssid :: SID, m)) <- readChan z2p
     writeChan p2f ((show (ssid, fst sssid), snd sssid), m)
@@ -211,7 +209,7 @@ testEnvSquash z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   writeChan z2a $ SttCruptZ2A_A2F ((show (("ssidY",""), "sssidX"), ""), "ok")
 
 
-squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+squashS (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ do
     mf <- readChan z2a
     case mf of
@@ -237,16 +235,19 @@ squashS crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   return ()
 
+
 testExecSquashReal :: IO String
-testExecSquashReal = runRand $ execUC testEnvSquash squash (bangF dummyFunctionality) dummyAdversary
+testExecSquashReal = runITMinIO 120 $ execUC testEnvSquash squash (bangF dummyFunctionality) dummyAdversary
 
 testExecSquashIdeal :: IO String
-testExecSquashIdeal = runRand $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
--- These three are equivalent
+testExecSquashIdeal = runITMinIO 120 $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
 
+
+{-- Remark: applying (bangP idealProtocol) is equiv to just (idealProtocol),
+            so all of these variations are equivalent--}
 testExecSquashIdeal' :: IO String
-testExecSquashIdeal' = runRand $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+testExecSquashIdeal' = runITMinIO 120 $ execUC testEnvSquash (bangP (idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
 
-testExecSquashIdeal'' :: IO String
-testExecSquashIdeal'' = runRand $ execUC testEnvSquash ((idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+testExecSquashIdeal'' :: IO String 
+testExecSquashIdeal'' = runITMinIO 120 $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
 
