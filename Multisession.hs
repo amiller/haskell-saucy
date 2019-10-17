@@ -43,11 +43,12 @@ bangF
   :: MonadFunctionality m =>
      (forall m'. MonadFunctionality m' => Functionality p2f f2p a2f f2a z2f f2z m') ->
      Functionality (SID, p2f) (SID, f2p) (SID, a2f) (SID, f2a) (SID, z2f) (SID, f2z) m
-bangF f (p2f, f2p) (a2f, f2a) _ = do
+bangF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
   a2ssid <- newIORef empty
+  z2ssid <- newIORef empty
 
   let newSsid ssid = do
         liftIO $ putStrLn $ "[" ++ show ?sid ++ "] Creating new subinstance with ssid: " ++ show ssid
@@ -63,9 +64,10 @@ bangF f (p2f, f2p) (a2f, f2a) _ = do
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
+        z <- newSsid' z2ssid f2z "f2z"
         fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in do
           liftIO $ putStrLn $ "in forked instance: " ++ show ?sid
-          f p a (undefined, undefined)
+          f p a z
         return ()
 
   let getSsid _2ssid ssid = do
@@ -129,9 +131,11 @@ bangP p (z2p, p2z) (f2p, p2f) = do
     getSsid f2ssid ssid >>= flip writeChan m
   return ()
 
+
 -- Theorem statement:
 --    (pi,f) ~ (phi,g) --> (!pi,!f) ~ (!phi,!g)
--- TODO: Simulator for this theorem statement
+--
+-- squashS below is a simulator for this statement
 
 
 {- Test cases for multisession -}
