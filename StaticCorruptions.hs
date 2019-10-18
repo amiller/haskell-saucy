@@ -75,6 +75,7 @@ runProtocol sid pid (z2p, p2z) (f2p, p2f) pi =
 type MonadAdversary m =
   (MonadITM m,
    ?sid :: SID,
+   ?crupt :: Crupt,
    ?pass :: m ())
 
 type Adversary z2a a2z f2p p2f f2a a2f m = MonadAdversary m => (Chan z2a, Chan a2z) -> (Chan (PID, f2p), Chan (PID, p2f)) -> (Chan f2a, Chan a2f) -> m ()
@@ -247,6 +248,7 @@ idealProtocol (z2p, p2z) (f2p, p2f) = do
     writeChan p2z m
   return ()
 
+-- dummyAdversary :: MonadAdversary m => Adversary (SttCruptZ2A b d) (SttCruptA2Z a c) a b c d m
 dummyAdversary (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
