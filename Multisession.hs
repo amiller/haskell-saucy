@@ -33,22 +33,27 @@ instance Show Void where
  Given a functionality F, the multisession extension, !F, 
  allows access to an arbitrary number of subinstances of F.
  Each subinstance of F is passed a distinct SID string.
+
  A composition theorem states that given a protocol pi realizing F,
  !pi realizes !F (for the obvious natural definition of multisession 
  protocols !pi)
+
+ Another composition theorem (JUC), states
+   F -> !G    G -> H
+  ------------------ (juc theorem)
+        F -> !H
 
  -}
 
 bangF
   :: MonadFunctionality m =>
-     (forall m'. MonadFunctionality m' => Functionality p2f f2p a2f f2a z2f f2z m') ->
-     Functionality (SID, p2f) (SID, f2p) (SID, a2f) (SID, f2a) (SID, z2f) (SID, f2z) m
-bangF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+     (forall m'. MonadFunctionality m' => Functionality p2f f2p a2f f2a Void Void m') ->
+     Functionality (SID, p2f) (SID, f2p) (SID, a2f) (SID, f2a) Void Void m
+bangF f (p2f, f2p) (a2f, f2a) _ = do
   -- Store a table that maps each SSID to a channel (f2p,a2p) used
   -- to communicate with each subinstance of !f
   p2ssid <- newIORef empty
   a2ssid <- newIORef empty
-  z2ssid <- newIORef empty
 
   let newSsid ssid = do
         liftIO $ putStrLn $ "[" ++ show ?sid ++ "] Creating new subinstance with ssid: " ++ show ssid
@@ -64,10 +69,9 @@ bangF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
         a <- newSsid' a2ssid f2a "f2a"
-        z <- newSsid' z2ssid f2z "f2z"
         fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in do
           liftIO $ putStrLn $ "in forked instance: " ++ show ?sid
-          f p a z
+          f p a (undefined, undefined)
         return ()
 
   let getSsid _2ssid ssid = do
@@ -86,6 +90,7 @@ bangF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     (ssid, m) <- readChan a2f
     --liftIO $ putStrLn $ "!F wrapper a->f received " ++ show ssid
     getSsid a2ssid ssid >>= flip writeChan m
+
   return ()
 
 

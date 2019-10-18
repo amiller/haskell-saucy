@@ -1,15 +1,13 @@
- {-# LANGUAGE ScopedTypeVariables, ImplicitParams #-} 
+{-# LANGUAGE ScopedTypeVariables, ImplicitParams #-} 
 
 module Multicast where
 
 import ProcessIO
 import StaticCorruptions
-import Duplex
-import Leak
-import Async
 import Multisession
-import Safe
+import Async
 
+import Safe
 import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM)
 
@@ -25,25 +23,21 @@ data MulticastF2P a = MulticastF2P_OK | MulticastF2P_Deliver a deriving Show
 data MulticastF2A a = MulticastF2A a deriving Show
 data MulticastA2F a = MulticastA2F_Deliver PID a deriving Show
 
-fMulticast :: (HasFork m, ?sid::SID, ?leak::t -> m (), ?registerCallback:: m (Chan ())) =>
-     Crupt
-     -> (Chan (PID, t), Chan (PID, MulticastF2P t))
-     -> (Chan (MulticastA2F t), Chan (MulticastF2A t))
-     -> (Chan Void, Chan Void)
-     -> m ()
-fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+fMulticast :: MonadFunctionalityAsync m t =>
+  Functionality t (MulticastF2P t) (MulticastA2F t) (MulticastF2A t) Void Void m
+fMulticast (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Sender and set of parties is encoded in SID
-  sid <- getSID
+  let sid = ?sid :: SID
   let (pidS :: PID, parties :: [PID], sssid :: String) = readNote "fMulticast" $ snd sid
 
-  if not $ member pidS crupt then
+  if not $ member pidS ?crupt then
       -- Only activated by the designated sender
       fork $ forever $ do
         (pid, m) <- readChan p2f
         if pid == pidS then do
           ?leak m
           forMseq_ parties $ \pidR -> do
-             byNextRound $ writeChan f2p (pidR, MulticastF2P_Deliver m)
+             eventually $ writeChan f2p (pidR, MulticastF2P_Deliver m)
           writeChan f2p (pidS, MulticastF2P_OK)
         else fail "multicast activated not by sender"
   else do
@@ -60,15 +54,12 @@ fMulticast crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 {-- An !fAuth hybrid protocol realizing fMulticast --}
-protMulticast :: (?sid::SID, HasFork m) =>
-     PID
-     -> (Chan t, Chan (MulticastF2P t))
-     -> (Chan (SID, FAuthF2P t),
-         Chan (SID, t))
-     -> m ()
-protMulticast pid (z2p, p2z) (f2p, p2f) = do
+protMulticast :: MonadProtocol m =>
+     Protocol t (MulticastF2P t) (SID, FAuthF2P t) (SID, t) m
+protMulticast (z2p, p2z) (f2p, p2f) = do
   -- Sender and set of parties is encoded in SID
-  sid <- getSID
+  let sid = ?sid :: SID
+  let pid = ?pid :: PID
   let (pidS :: PID, parties :: [PID], sssid :: String) = readNote "protMulticast:" $ snd sid
 
   cOK <- newChan
@@ -94,25 +85,21 @@ protMulticast pid (z2p, p2z) (f2p, p2f) = do
       FAuthF2P_Deliver m -> do
         -- Double check this is the intended message
         let (pidS' :: PID, pidR' :: PID, _ :: String) = readNote "protMulticast_2" $ snd ssid
-        assert (pidS' == pidS) "wrong sender"
-        assert (pidR' == pid)  "wrong recipient"
+        require (pidS' == pidS) "wrong sender"
+        require (pidR' == pid)  "wrong recipient"
         writeChan p2z (MulticastF2P_Deliver m)
       FAuthF2P_OK -> writeChan cOK ()
 
   return ()
 
 
-
 {-- The dummy simmulator for protMulticast --}
-
-simMulticast crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   {-
   What happens when the environment asks the adversary to query the buffer?
-  -} 
-  sid <- getSID
-  let ("", s1) = readNote "sim multicast s1" $ snd sid
-  let ("", s2) = readNote "sim multicast s2" $ s1
-  let (pidS :: PID, parties :: [PID], sssid :: String) = readNote "sim multicast" $ s2
+  -}
+  let sid = ?sid :: SID
+  let (pidS :: PID, parties :: [PID], sssid :: String) = readNote "sim multicast" (snd sid)
 
   fork $ forever $ do
     mf <- readChan z2a
@@ -121,43 +108,32 @@ simMulticast crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
       -- This requires tedious programming to get right, I wish we could just search for it!
       SttCruptZ2A_A2P (pid, m) -> undefined
 
-      SttCruptZ2A_A2F (DuplexA2F_Left (ClockA2F_Deliver r idx)) -> do
+      SttCruptZ2A_A2F (Left (ClockA2F_Deliver idx)) -> do
         -- The protocol guarantees that clock events are inserted in correct order, 
         -- so delivery can be passed through directly
-        writeChan a2f (DuplexA2F_Left (ClockA2F_Deliver r idx))
-      SttCruptZ2A_A2F (DuplexA2F_Right (DuplexA2F_Left LeakA2F_Get)) -> do
+        writeChan a2f (Left (ClockA2F_Deliver idx))
+      SttCruptZ2A_A2F (Left ClockA2F_GetLeaks) -> do
         -- If the "ideal" leak buffer contains "Multicast m",
         -- then the "real" leak buffer should contain [(pid, (sid, m)] for every party
-        writeChan a2f (DuplexA2F_Right (DuplexA2F_Left LeakA2F_Get))
-        DuplexF2A_Right (DuplexF2A_Left (LeakF2A_Leaks buf)) <- readChan f2a
+        writeChan a2f (Left ClockA2F_GetLeaks)
+        (Left (ClockF2A_Leaks buf)) <- readChan f2a
         let extendRight conf = show ("", conf)
         let resp = case buf of
               []       ->  []
-              [(_, m)] ->  [(extendSID (extendSID (extendSID sid "DuplexRight" undefined) "DuplexRight" undefined) "" (show (pidS, pid, "")), 
-                             m)
-                            | pid <- parties]
-        writeChan a2z $ SttCruptA2Z_F2A $ DuplexF2A_Right $ DuplexF2A_Left $ LeakF2A_Leaks resp
+              [m] ->  [(extendSID sid "" (show (pidS, pid, "")),
+                         m)
+                      | pid <- parties]
+        writeChan a2z $ SttCruptA2Z_F2A $ Left (ClockF2A_Leaks resp)
         
   return ()
 
+
 testEnvMulticast
-  :: (HasFork m, ?pass::m()) =>
-     Chan SttCrupt_SidCrupt
-     -> (Chan (PID, MulticastF2P String), Chan (PID, String))
-     -> (Chan (SttCruptA2Z
-               (DuplexF2P Void (DuplexF2P Void (SID, FAuthF2P String)))
-               (DuplexF2A ClockF2A (DuplexF2A (LeakF2A String) (SID, Void)))),
-         Chan (SttCruptZ2A 
-               (DuplexP2F Void (DuplexP2F Void (SID, String)))
-               (DuplexA2F ClockA2F (DuplexA2F LeakA2F (SID, Void)))))
-     -> (Chan (DuplexF2Z ClockF2Z (DuplexF2Z Void Void)), 
-         Chan (DuplexZ2F ClockZ2F (DuplexZ2F Void Void)))
-     -> Chan ()
-     -> Chan [Char]
-     -> m ()
+  :: MonadEnvironment m =>
+     Environment (MulticastF2P String) String (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void))) (SttCruptZ2A (SID, String) (Either ClockA2F (SID, Void))) Void ClockZ2F String m
 testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let extendRight conf = show ("", conf)
-  let sid = ("sidTestMulticast", extendRight $ extendRight $ show ("Alice", ["Alice", "Bob"], ""))
+  let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
@@ -168,7 +144,7 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     liftIO $ putStrLn $ "Z: a sent " ++ show m 
     ?pass
   fork $ forever $ do
-    DuplexF2Z_Left f <- readChan f2z
+    f <- readChan f2z
     liftIO $ putStrLn $ "Z: f sent " ++ show f
     ?pass
 
@@ -178,29 +154,33 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Let the adversary see
   () <- readChan pump 
-  writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Right $ DuplexA2F_Left $ LeakA2F_Get
+  writeChan z2a $ SttCruptZ2A_A2F $ Left ClockA2F_GetLeaks
 
   -- Optional: Adversary delivers messages out of order
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_A2F $ DuplexA2F_Left $ ClockA2F_Deliver 1 1
+  writeChan z2a $ SttCruptZ2A_A2F $ Left (ClockA2F_Deliver 1)
+
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2F $ Left (ClockA2F_Deliver 0)
 
   -- Advance to round 1
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
+  -- () <- readChan pump
+  -- writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
+  -- () <- readChan pump
+  -- writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
 
   -- Advance to round 2
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
-  () <- readChan pump
-  writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
+  -- () <- readChan pump
+  -- writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
+  -- () <- readChan pump
+  -- writeChan z2f (DuplexZ2F_Left ClockZ2F_MakeProgress)
 
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
 testMulticastReal :: IO String
-testMulticastReal = runRand $ execUC testEnvMulticast (runAsyncP $ runLeakP protMulticast) (runAsyncF $ runLeakF $ bangF fAuth) dummyAdversary
+testMulticastReal = runITMinIO 120 $ execUC testEnvMulticast (protMulticast) (runAsyncF $ bangFAsync $ fAuth) dummyAdversary
 
 testMulticastIdeal :: IO String
-testMulticastIdeal = runRand $ execUC testEnvMulticast (runAsyncP $ runLeakP idealProtocol) (runAsyncF $ runLeakF fMulticast) simMulticast
+testMulticastIdeal = runITMinIO 120 $ execUC testEnvMulticast (idealProtocol) (runAsyncF fMulticast) simMulticast
+
