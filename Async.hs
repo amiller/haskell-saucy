@@ -222,18 +222,19 @@ testAuthAsync = runITMinIO 120 $ execUC testEnvAuthAsync (idealProtocol) (runAsy
    hold in general.
  -}
 
-_bangFAsync :: MonadFunctionality m => Chan (SID, l) -> Chan (Chan ()) -> (forall m. MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m) ->  Functionality p2f f2p a2f f2a Void Void m
+_bangFAsync :: MonadFunctionality m => Chan (SID, l) -> Chan (Chan (), Chan ()) -> (forall m. MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m) ->  Functionality p2f f2p a2f f2a Void Void m
 _bangFAsync _leak _eventually f = f
   where
     ?leak = \l -> writeChan _leak (?sid, l)
     ?eventually = \m -> do
       cb <- newChan
-      writeChan _eventually cb
+      ok <- newChan
+      writeChan _eventually (cb, ok)
       fork $ do
         () <- readChan cb
         m
-      return ()
-                                           
+      readChan ok
+
 
 bangFAsync
   :: MonadFunctionalityAsync m (SID, l) =>
@@ -242,14 +243,17 @@ bangFAsync
 bangFAsync f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   _leak <- newChan
   _eventually <- newChan
+
   fork $ forever $ do
-    cb <- readChan _eventually
+    (cb,ok) <- readChan _eventually
     eventually $ do
       writeChan cb ()
+    writeChan ok ()
+
   fork $ forever $ do
     l <- readChan _leak
     ?leak l
-  
+
   bangF (_bangFAsync _leak _eventually f) (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
 
