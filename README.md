@@ -21,9 +21,9 @@ SaUCy is a research program that aims to use Universal Composability as the basi
 
    Defines the UC execution experiment.
 
-   Session ID chosen by the environment. Multiple parties created on demand
+   The environment chooses a session ID, along with the list of parties to corrupt. Byzantine corruptions, since Adversary gets to send/receive all messages on behalf of the corrupted parties. Multiple parties with distinct PIDs are created on demand.
 
-   Composition operator, connects the Protocol-to-Functionality (`(p2f,f2p)`) channel of `pi` to Environment-to-Protocol (`(z2p,p2z)`) channel of `pi`
+   Composition operator:  connects the Protocol-to-Functionality (`(p2f,f2p)`) channel of `pi` to Environment-to-Protocol (`(z2p,p2z)`) channel of `pi`
    Theorem: Composition preserves secure emulation
             (pi,F2) ~ (idealProtocol, F3)
             (rho,F1) ~ (idealProtocol, F2)
@@ -34,23 +34,29 @@ SaUCy is a research program that aims to use Universal Composability as the basi
 
 3. Commitment.hs
 
+   Functionality: fCom, fRO
+   Protocol: protCom
+
    Theorem: Commitment is impossible in the standard model, even if the parties are allowed to communicate
 
    Theorem: Commitment is realizable in the RO hybrid model
+         fRO -> fCom
 
 4. Multisession.hs
-
-   The `bangF` operator (!F) creates multiple instances of a functionality, each accessed by a sub-session id
+   Composition operator: The `bangF` operator (!F) creates multiple instances of a functionality, each accessed by a sub-session id
 
    Theorem: Joint State composition
+            !F -> !!F
 
 5. Async.hs
-
-   Theorem: 
+   Composition operator: runAsyncF
+   Composition operator: bangFAsync
 
 6. Multicast.hs
-
+   Functionality: fMulticast
+   Protocol: protMulticast
    Theorem: Multicast is realizable in the !Auth model
+      !fAuth -> fMulticast
 
 7. ACast.hs
 
