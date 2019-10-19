@@ -208,12 +208,6 @@ testRewind = runRandIO $ do
    simulator, etc., but not set concretely until runtime.
 -}
 
-runSecParam :: Int -> ((?secParam :: Int) => a) -> a
-runSecParam k p =
-  let ?secParam = k in p
-
-
-
 
 {-------------------------------------------}
 {- Running ITMs                           --}
@@ -221,7 +215,7 @@ runSecParam k p =
 
 runITMinIO :: Int -> (forall m. MonadITM m => m a) -> IO a
 runITMinIO k p = do
-  runSecParam k $ runRandIO $
+  let ?secParam = k in runRandIO $
     let ?getTokens = undefined in
       let ?tick = undefined in
         p

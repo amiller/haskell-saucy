@@ -19,9 +19,6 @@ import Data.IORef.MonadIO
 import Data.Map.Strict hiding (drop,splitAt)
 
 
-deleteAtIndex index list = pref ++ (drop 1 suff) 
-    where (pref,suff) = splitAt index list
-
 {----------------
  -- Session IDs
  --  tag:  a unique string, based on the callgraph of protocols/functionalities

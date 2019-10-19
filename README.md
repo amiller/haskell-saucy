@@ -1,13 +1,16 @@
 saUCy: Super Amazing Universal ComposabilitY
 =====
 
-An implementation (in Haskell) of Universal Composability.
+A Haskell tour of the Universal Composability cryptography framework.
 
-Universal Composability [cite] is a modern, general purpose framework for defining and implementing secure cryptographic protocols. However, it primarily exists only "on paper", and numerous variations (guc, juc, symbolic UC, RSIM, GNUC, and more) make it hard to keep track of the precise semantics of work done in UC.
+Universal Composability a general purpose framework for constructing, specifying, and analyzing cryptography protocols.
 
 This project provides a concrete implementation of the framework, as a way of clarifying the ambiguous parts, experimenting with variations and extensions, and sanity-checking specifications, protocols, and simulator constructions.
 
-This is a component of a larger program to put Universal Composability on a proper analytic foundation, especially including mechanically checkable proofs. Other components will include a specialized programming language for UC, with a type checker that provides better guarantees, and integration with existing mechanized proof tools (like Easycrypt and Proverif)
+Comparison with ILC-SaUCy:
+The type system here provides only a partial checking. On the other hand, the tools and practicality of Haskell make this a convenient way to sanity check.
+
+SaUCy is a research program that aims to use Universal Composability as the basis for software development tools. Goals of this include providing mechanically checkable proofs.
 
 1. InteractiveTuringMachines.hs
    Defines the process model for interactive turing machines.
