@@ -61,7 +61,7 @@ fACast (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 {- Protocol ACast -}
 
-data ACastMsg t = ACast_VAL t | ACast_ECHO t | ACast_DECIDE t deriving (Show, Eq, Read)
+data ACastMsg t = ACast_VAL t | ACast_ECHO t | ACast_READY t deriving (Show, Eq, Read)
 
 -- Give (fBang fMulticast) a nicer interface
 manyMulticast :: MonadProtocol m =>
@@ -167,14 +167,14 @@ protACast (z2p, p2z) (f2p, p2f) = do
           --liftIO $ putStrLn $ "[protACast] " ++ show n ++ " " ++ show thresh ++ " " ++ show (Map.size echV')
           if Map.size echV' == thresh then do
               liftIO $ putStrLn "Threshold met! Deciding"
-              multicast $ ACast_DECIDE v
+              multicast $ ACast_READY v
           else do
               liftIO $ putStrLn $ "[protACast] not met yet"
               return ()
           liftIO $ putStrLn $ "[protACast] return OK"
           writeChan p2z ACastF2P_OK
 
-      ACast_DECIDE v -> do
+      ACast_READY v -> do
           -- Check each signature
           dec <- readIORef decided
           if dec then writeChan p2z (ACastF2P_OK)
@@ -183,26 +183,25 @@ protACast (z2p, p2z) (f2p, p2f) = do
             ct <- readIORef ctr
             if ct == thresh then do
               liftIO $ putStrLn "Deciding!"
-              multicast $ ACast_DECIDE v
+              multicast $ ACast_READY v
               writeIORef decided True
               writeChan p2z (ACastF2P_Deliver v)
-            else 
-              writeChan p2z ACastF2P_OK
+            else writeChan p2z ACastF2P_OK
   return ()
 
 
 -- More utils
 
-testEnvACast
+testEnvACastIdeal
   :: MonadEnvironment m =>
   Environment (ACastF2P String) (ACastP2F String) (SttCruptA2Z a (Either (ClockF2A String) Void)) (SttCruptZ2A b (Either ClockA2F Void)) Void (ClockZ2F) String m
-testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
+testEnvACastIdeal z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let extendRight conf = show ("", conf)
   let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid Map.empty
   fork $ forever $ do
     (pid, m) <- readChan p2z
-    liftIO $ putStrLn $ "Z[testEnvACast]: pid[" ++ pid ++ "] output " ++ show m
+    liftIO $ putStrLn $ "Z[testEnvACastIdeal]: pid[" ++ pid ++ "] output " ++ show m
     ?pass
 
   -- Have Alice write a message
@@ -213,7 +212,7 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let checkQueue = do
         writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
         SttCruptA2Z_F2A (Left (ClockF2A_Count c)) <- readChan a2z
-        liftIO $ putStrLn $ "Z[testEnvACast]: Events remaining: " ++ show c
+        liftIO $ putStrLn $ "Z[testEnvACastIdeal]: Events remaining: " ++ show c
         return (c > 0)
 
   () <- readChan pump
@@ -227,13 +226,58 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   writeChan outp "environment output: 1"
 
-testACastIdeal :: IO String
-testACastIdeal = runITMinIO 120 $ execUC testEnvACast (idealProtocol) (runAsyncF $ fACast) dummyAdversary
-{--
+testACastBenign :: IO String
+testACastBenign = runITMinIO 120 $ execUC testEnvACastIdeal (idealProtocol) (runAsyncF $ fACast) dummyAdversary
+
+
+testEnvACast
+  :: MonadEnvironment m =>
+  Environment (ACastF2P String) (ACastP2F String) (SttCruptA2Z a (Either (ClockF2A (SID,ACastMsg String)) (SID, MulticastF2A (ACastMsg String)))) (SttCruptZ2A (SID, ACastMsg String) (Either ClockA2F (SID, MulticastA2F (ACastMsg String)))) Void (ClockZ2F) String m
+testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
+  let extendRight conf = show ("", conf)
+  let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
+  writeChan z2exec $ SttCrupt_SidCrupt sid Map.empty
+  fork $ forever $ do
+    (pid, m) <- readChan p2z
+    liftIO $ putStrLn $ "Z[testEnvACastIdeal]: pid[" ++ pid ++ "] output " ++ show m
+    ?pass
+
+  -- Have Alice write a message
+  () <- readChan pump 
+  writeChan z2p ("Alice", ACastP2F_Input "I'm Alice")
+
+  -- Empty the queue
+  let checkQueue = do
+        writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
+        SttCruptA2Z_F2A (Left (ClockF2A_Count c)) <- readChan a2z
+        liftIO $ putStrLn $ "Z[testEnvACastIdeal]: Events remaining: " ++ show c
+        return (c > 0)
+
+  () <- readChan pump
+  whileM_ checkQueue $ do
+    {- Two ways to make progress -}
+    {- 1. Environment to Functionality - make progress -}
+    -- writeChan z2f ClockZ2F_MakeProgress
+    {- 2. Environment to Adversary - deliver first message -}
+    writeChan z2a $ SttCruptZ2A_A2F (Left (ClockA2F_Deliver 0))
+    readChan pump
+
+  writeChan outp "environment output: 1"
+
 testACastReal :: IO String
 testACastReal = runITMinIO 120 $ execUC
   testEnvACast 
   (protACast) 
   (runAsyncF $ bangFAsync fMulticast)
   dummyAdversary
+
+  
+{-- TODO: Simulator for ACast --}
+{--
+testACastIdeal :: IO String
+testACastIdeal = runITMinIO 120 $ execUC
+  testEnvACast 
+  (idealProtocol) 
+  (runAsyncF $ fACast)
+  simACast
 --}
