@@ -106,7 +106,10 @@ simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     case mf of
       -- TODO: For corrupted parties, the simulator translates "FAuthP2F_Msg m" messages intended for !fAuth (real world) into "MulticastA2F deliver" messages
       -- This requires tedious programming to get right, I wish we could just search for it!
-      SttCruptZ2A_A2P (pid, m) -> undefined
+      SttCruptZ2A_A2P (pid, m) -> do 
+        let _s :: SID = fst m
+        let _m :: String = snd m
+        writeChan a2f $ Right $ MulticastA2F_Deliver pid _m 
 
       SttCruptZ2A_A2F (Left (ClockA2F_Deliver idx)) -> do
         -- The protocol guarantees that clock events are inserted in correct order, 
@@ -127,6 +130,38 @@ simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
         
   return ()
 
+testVEnv
+  :: MonadEnvironment m =>
+     Environment (MulticastF2P String) String (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void))) (SttCruptZ2A (SID, String) (Either ClockA2F (SID, Void))) Void ClockZ2F String m
+testVEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
+  let extendRight conf = show ("", conf)
+  let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob", "Charlie"], ""))
+  writeChan z2exec $ SttCrupt_SidCrupt sid $ Map.fromList [("Alice",())]
+  --writeChan z2exec $ SttCrupt_SidCrupt sid empty
+  fork $ forever $ do
+    (pid, m) <- readChan p2z
+    liftIO $ putStrLn $ "Z: Party[" ++ pid ++ "] output " ++ show m
+    ?pass
+  fork $ forever $ do
+    m <- readChan a2z
+    liftIO $ putStrLn $ "Z: a sent " ++ show m 
+    ?pass
+  fork $ forever $ do
+    f <- readChan f2z
+    liftIO $ putStrLn $ "Z: f sent " ++ show f
+    ?pass
+
+  -- Have Alice write a message
+  () <- readChan pump 
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", (sid, "I'm Alice"))
+
+  () <- readChan pump
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", (sid, "You're not Alice"))
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Charlie", (sid, "You're not Alice"))
+
+  () <- readChan pump
+  writeChan outp "1"
+  
 
 testEnvMulticast
   :: MonadEnvironment m =>
@@ -184,3 +219,5 @@ testMulticastReal = runITMinIO 120 $ execUC testEnvMulticast (protMulticast) (ru
 testMulticastIdeal :: IO String
 testMulticastIdeal = runITMinIO 120 $ execUC testEnvMulticast (idealProtocol) (runAsyncF fMulticast) simMulticast
 
+testNewMulticast :: IO String
+testNewMulticast = runITMinIO 120 $ execUC testVEnv (idealProtocol) (runAsyncF fMulticast) simMulticast
