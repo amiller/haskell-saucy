@@ -160,8 +160,9 @@ fAuth (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     liftIO $ putStrLn $ "[fAuth] message received: " ++ show (pidS, pidR, ssid)
 
     -- Sender can only send message once
-    False <- readIORef recorded
-    if not (pid == pidS) then fail "Invalid sender to fAuth" 
+    _ <- readIORef recorded
+    -- if _ == False then error "recorded problem" else do
+    if not (pid == pidS) then error "Invalid sender to fAuth" 
     else do
       writeIORef recorded True
       ?leak m

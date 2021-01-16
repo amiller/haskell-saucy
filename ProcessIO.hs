@@ -138,7 +138,7 @@ runRandIO p = let ?getBit = (liftIO $ randomRIO (False,True)) in p
 
 --getNbits :: (Num a, Monad m, ?getBit :: m Bool) => Int -> m a
 getNbits 0 = return 0
-getNbits n | n < 0 = fail "negative bits?"
+getNbits n | n < 0 = error "negative bits?"
 getNbits n = do
   b <- ?getBit
   rest <- getNbits (n-1)
@@ -174,7 +174,8 @@ runRandReplay :: (MonadIO m, ?getBit :: m Bool) =>
 runRandReplay bits p = do
   ref <- newIORef bits
   let ?getBit = do
-        (bit : rest) <- readIORef ref
+        br <- readIORef ref
+        let (bit : rest) = br
         writeIORef ref rest
         return bit
     in p
@@ -284,5 +285,5 @@ test2run = runITMinIO 120 test2
 
 
 {- run-time checking of a condition or throw exception -}
-require cond msg = if not cond then fail msg else return ()
+require cond msg = if not cond then error msg else return ()
 

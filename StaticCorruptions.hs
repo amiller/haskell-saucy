@@ -194,7 +194,7 @@ partyWrapper sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) p = do
   -- Route messages from environment to honest parties
   fork $ forever $ do
     (pid, m) <- readChan z2p
-    if member pid crupt then fail "env sent to corrupted party!" else return undefined
+    if member pid crupt then error "env sent to corrupted party!" else return undefined
     --liftIO $ putStrLn $ "party wrapper z->p received"
     _pid <- getPid z2pid pid
     writeChan _pid m 
@@ -215,7 +215,7 @@ partyWrapper sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) p = do
   -- Pass messages to corrupt parties on to the functionatliy
   fork $ forever $ do
     (pid, m) <- readChan a2p
-    if not $ member pid crupt then fail "tried to send corrupted!" else return undefined
+    if not $ member pid crupt then error "tried to send corrupted!" else return undefined
     writeChan p2f (pid, m)
 
   return ()
@@ -416,12 +416,12 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Routing between p and rho
   fork $ forever $ do
     (pid, m) <- readChan p2z
-    if member pid crupt then fail "p sent from corrupted party!" else return undefined
+    if member pid crupt then error "p sent from corrupted party!" else return undefined
     getPid f2pid pid >>= flip writeChan m
 
   -- Routing between z and rho
   fork $ forever $ do
     (pid, m) <- readChan z2pZ
-    if member pid crupt then fail "env (z) sent to corrupted party!" else return undefined
+    if member pid crupt then error "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
 

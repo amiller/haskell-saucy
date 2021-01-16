@@ -238,7 +238,7 @@ squashS (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ do
     (pid, (ssid, (sssid, m))) <- readChan p2a
     writeChan a2z $ SttCruptA2Z_P2A (pid, ((show (ssid, fst sssid), snd sssid), m))
-    fail "unknown!"
+    error "unknown!"
 
   fork $ forever $ do
     (ssid, (sssid, m)) <- readChan f2a
