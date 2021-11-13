@@ -100,8 +100,8 @@ runEnvironment :: MonadITM m => Chan () -> Chan SttCrupt_SidCrupt -> (Chan (PID,
 runEnvironment passer sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) z = do
   pump <- newChan
   outp <- newChan
-  let ?pass = writeChan passer () in
-    fork $ z sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp
+  let ?pass = writeChan passer ()
+  fork $ z sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp
   c <- multiplex passer outp
   let _run = do
         writeChan pump ()
@@ -248,7 +248,7 @@ idealProtocol (z2p, p2z) (f2p, p2f) = do
     writeChan p2z m
   return ()
 
--- dummyAdversary :: MonadAdversary m => Adversary (SttCruptZ2A b d) (SttCruptA2Z a c) a b c d m
+dummyAdversary :: MonadAdversary m => Adversary (SttCruptZ2A b d) (SttCruptA2Z a c) a b c d m
 dummyAdversary (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   fork $ forever $ readChan z2a >>= \mf -> 
       case mf of
@@ -308,7 +308,11 @@ testExec = runITMinIO 120 $ execUC testEnv idealProtocol dummyFunctionality dumm
 --      z <--|--> a <--> dS <--|--> f or p
 
 
-lemS dS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+lemS :: MonadAdversary m =>
+  Adversary (SttCruptZ2A a2p a2f) (SttCruptA2Z p2a f2a) p2a a2p f2a a2f m ->
+  Adversary z2a a2z p2a a2p f2a a2f m -> 
+  Adversary z2a a2z p2a a2p f2a a2f m
+lemS dS a (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   a2pfS <- newChan
   a2fS <- wrapWrite SttCruptZ2A_A2F a2pfS
@@ -323,10 +327,15 @@ lemS dS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     case mf of 
       SttCruptA2Z_F2A m -> writeChan f2aS m
       SttCruptA2Z_P2A m -> writeChan p2aS m
-    
-  fork $  a crupt (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS)
-  fork $ dS crupt (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f)
 
+  passer <- newChan
+  fork $ forever $ do
+    readChan passer >>= \_ -> ?pass
+
+  fork $ runAdversary ?sid ?crupt passer (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS) a
+  fork $ runAdversary ?sid ?crupt passer (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f) dS
+  
+  return ()
 
 {- Protocol Composition Theorem -}
 
@@ -334,12 +343,17 @@ lemS dS a crupt (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 --   This is different than the operation in UC Canetti, 
 --   but the same as in Canetti Authentication
 
-compose rho p pid (z2p, p2z) (f2p, p2f) = do
+compose :: MonadProtocol m =>
+  Protocol z2p p2z p2rho rho2p m ->
+  Protocol rho2p p2rho f2p p2f m ->
+  Protocol z2p p2z f2p p2f m
+
+compose rho p (z2p, p2z) (f2p, p2f) = do
   r2p <- newChan
   p2r <- newChan
-  fork $ rho pid (z2p, p2z) (r2p, p2r)
-  fork $ p   pid            (p2r, r2p) (f2p, p2f)
-
+  fork $ rho (z2p, p2z) (r2p, p2r)
+  fork $ p              (p2r, r2p) (f2p, p2f)
+  return ()
 
 -- Theorem statement:
 --       (pi,f) ~ (phi,g) --> (rho^pi,f) ~ (rho^phi,g)
@@ -424,3 +438,53 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     (pid, m) <- readChan z2pZ
     if member pid crupt then error "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
+
+
+-- Composition theorem for functionality realization
+--
+-- We want to view protocols as arrows between functionalities, realizing one functionality
+-- from a protocol built on top of another. This leads to composition in a category where
+-- objects are functionalities and protocols are arrows.
+--
+-- Theorem:
+--   (pi,F1) ~ (id,F2)
+--   (rho,F2) ~ (id,F3)
+--   ------------------
+--   (rho^pi,F1) ~ (id,F3)
+--
+-- The proof requires connecting the two simulators together.
+--
+-- compoS runs s_pi and s_rho locally
+--      z <--|--> rho <--> pi <--|--> f or p
+
+
+compoS :: MonadAdversary m =>
+  Adversary (SttCruptZ2A a2p a2f1) (SttCruptA2Z p2a f12a) p2a a2p f22a a2f2 m ->
+  Adversary (SttCruptZ2A a2p a2f2) (SttCruptA2Z p2a f22a) p2a a2p f32a a2f3 m ->
+  Adversary (SttCruptZ2A a2p a2f1) (SttCruptA2Z p2a f12a) p2a a2p f32a a2f3 m
+
+compoS s_pi s_rho (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  a2pfS <- newChan
+  a2fS <- wrapWrite SttCruptZ2A_A2F a2pfS
+  a2pS <- wrapWrite SttCruptZ2A_A2P a2pfS
+
+  pf2aS <- newChan
+  p2aS <- newChan
+  f2aS <- newChan
+
+  fork $ forever $ do
+    mf <- readChan pf2aS
+    case mf of 
+      SttCruptA2Z_F2A m -> writeChan f2aS m
+      SttCruptA2Z_P2A m -> writeChan p2aS m
+
+  passer <- newChan
+  fork $ forever $ do
+    readChan passer >>= \_ -> ?pass
+
+  fork $ runAdversary ?sid ?crupt passer (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS) s_pi
+  fork $ runAdversary ?sid ?crupt passer (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f) s_rho
+  
+  return ()
+
+
