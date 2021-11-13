@@ -350,8 +350,8 @@ compose rho p pid (z2p, p2z) (f2p, p2f) = do
 --     forall z. execUC z pi f dA ~ execUC z phi g s
 --
 --   Suppose for contradiction rho^pi ~!~ rho^phi.
---   Then there exists a bad environment z, such that
---     forall s. execUC z rho^pi f dA ~!~ execUC z rho^phi g s
+--   Then for any simulator, including s, there exists a bad environment z, such that
+--     execUC z rho^pi f dA ~!~ execUC z rho^phi g s
 --
 --   From this z we can construct a distingushing environment zBad such that
 --     execUC (zBad z) pi f dA ~!~ execUC (zBad z) phi g s
@@ -424,4 +424,3 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     (pid, m) <- readChan z2pZ
     if member pid crupt then error "env (z) sent to corrupted party!" else return undefined
     getPid z2pid pid >>= flip writeChan m
-
