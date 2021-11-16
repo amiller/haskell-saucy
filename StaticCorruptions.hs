@@ -143,8 +143,8 @@ execUC z p f a = do
     -- First, wait for the environment to choose an sid
     SttCrupt_SidCrupt sid crupt <- readChan z2exec
 
-    fork $ runFunctionality sid crupt (p2f, f2p) (a2f, f2a) (z2f, f2z) f
-    fork $ partyWrapper sid crupt (z2p, p2z) (f2p, p2f) (a2p, p2a) p
+    fork $ runFunctionality sid crupt  (p2f, f2p) (a2f, f2a) (z2f, f2z) f
+    fork $ partyWrapper sid crupt      (z2p, p2z) (f2p, p2f) (a2p, p2a) p
     fork $ runAdversary sid crupt pass (z2a, a2z) (p2a, a2p) (f2a, a2f) a
     return ()
 
@@ -305,14 +305,14 @@ testExec = runITMinIO 120 $ execUC testEnv idealProtocol dummyFunctionality dumm
 --    forall a z. execUC z p f a ~ execUC z q g (lemS dS a)
 
 -- Intuition: lemS runs a and dS locally
---      z <--|--> a <--> dS <--|--> f or p
+--      z <--|--> a <--> dS <--|--> g or p
 
 
 lemS :: MonadAdversary m =>
-  Adversary (SttCruptZ2A a2p a2f) (SttCruptA2Z p2a f2a) p2a a2p f2a a2f m ->
-  Adversary z2a a2z p2a a2p f2a a2f m -> 
-  Adversary z2a a2z p2a a2p f2a a2f m
-lemS dS a (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  Adversary (SttCruptZ2A p2f a2f) (SttCruptA2Z f2p f2a) g2p p2g g2a a2g m ->
+  Adversary z2a a2z f2p p2f f2a a2f m ->
+  Adversary z2a a2z g2p p2g g2a a2g m
+lemS dS a (z2a, a2z) (p2a, a2p) (g2a, a2g) = do
 
   a2pfS <- newChan
   a2fS <- wrapWrite SttCruptZ2A_A2F a2pfS
@@ -333,7 +333,7 @@ lemS dS a (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     readChan passer >>= \_ -> ?pass
 
   fork $ runAdversary ?sid ?crupt passer (z2a, a2z) (p2aS, a2pS) (f2aS, a2fS) a
-  fork $ runAdversary ?sid ?crupt passer (a2pfS, pf2aS) (p2a, a2p) (f2a, a2f) dS
+  fork $ runAdversary ?sid ?crupt passer (a2pfS, pf2aS) (p2a, a2p) (g2a, a2g) dS
   
   return ()
 
@@ -447,21 +447,21 @@ compose_zBad rho z z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 -- objects are functionalities and protocols are arrows.
 --
 -- Theorem:
---   (pi,F1) ~ (id,F2)
---   (rho,F2) ~ (id,F3)
+--   (pi,F) ~ (id,G)
+--   (rho,G) ~ (id,H)
 --   ------------------
---   (rho^pi,F1) ~ (id,F3)
+--   (rho^pi,F) ~ (id,H)
 --
 -- The proof requires connecting the two simulators together.
 --
 -- compoS runs s_pi and s_rho locally
---      z <--|--> rho <--> pi <--|--> f or p
+--      z <--|--> rho <--> pi <--|--> h or p
 
 
 compoS :: MonadAdversary m =>
-  Adversary (SttCruptZ2A a2p a2f1) (SttCruptA2Z p2a f12a) p2a a2p f22a a2f2 m ->
-  Adversary (SttCruptZ2A a2p a2f2) (SttCruptA2Z p2a f22a) p2a a2p f32a a2f3 m ->
-  Adversary (SttCruptZ2A a2p a2f1) (SttCruptA2Z p2a f12a) p2a a2p f32a a2f3 m
+  Adversary (SttCruptZ2A p2f a2f) (SttCruptA2Z f2p f2a) g2p p2g g2a a2g m ->
+  Adversary (SttCruptZ2A p2g a2g) (SttCruptA2Z g2p g2a) h2p p2h h2a a2h m ->
+  Adversary (SttCruptZ2A p2f a2f) (SttCruptA2Z f2p f2a) h2p p2h h2a a2h m
 
 compoS s_pi s_rho (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   a2pfS <- newChan
