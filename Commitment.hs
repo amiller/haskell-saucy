@@ -28,7 +28,7 @@ fTwoWay (p2f, f2p) _ _ = do
 -- Commitment is impossible to realize in the standard model
 
 data ComP2F a = ComP2F_Commit a | ComP2F_Open deriving Show
-data ComF2P a = ComF2P_OK | ComF2P_Commit   | ComF2P_Open a deriving Show
+data ComF2P a = ComF2P_OK | ComF2P_Commit | ComF2P_Open a deriving Show
 
 fComDbg :: MonadFunctionality m => (Chan a) -> Functionality (ComP2F a) (ComF2P a) Void Void Void Void m
 fComDbg dbg = fCom_ (Just dbg)
@@ -49,7 +49,6 @@ fCom_ dbg (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   mx <- readChan s2f
   let x = case mx of
         ComP2F_Commit x -> x
-        _ -> error ""
   -- Debug option:
   case dbg of
     Just d -> writeChan d x
@@ -60,10 +59,9 @@ fCom_ dbg (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
       mx <- readChan s2f
       let () = case mx of
             ComP2F_Open -> ()
-            _ ->  error ""
       writeChan f2p (pidR, ComF2P_Open x)
 
-
+envComBenign :: MonadEnvironment m => Environment (ComF2P Bool) (ComP2F Bool) (a) (b) Void Void (Bool, Bool) m
 envComBenign z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestCommit", show ("Alice", "Bob", ("", "")))
   writeChan z2exec $ SttCrupt_SidCrupt sid empty
@@ -118,7 +116,9 @@ testComBenignReal p = runITMinIO 120 $ execUC envComBenign (p) (fTwoWay) (dummyA
 
  -}
 
-envComZ1 alice2bob bob2alice z2exec (p2z, z2p :: Chan (PID, ComP2F Bool)) (a2z, z2a) (f2z, z2f) pump outp = do
+envComZ1 :: MonadEnvironment m => Chan a -> Chan b ->
+   Environment (ComF2P Bool) (ComP2F Bool) (SttCruptA2Z b Void) (SttCruptZ2A a Void) Void Void (ComF2P a) m
+envComZ1 alice2bob bob2alice z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestCommitZ1", show ("Alice", "Bob", ("","")))
             
   -- In Z1, Alice is corrupted
@@ -137,11 +137,6 @@ envComZ1 alice2bob bob2alice z2exec (p2z, z2p :: Chan (PID, ComP2F Bool)) (a2z, 
         liftIO $ putStrLn "problem!"
         ?pass
 
-  -- Force Z2F to be Void
-  fork $ forever $ do
-    (a :: Void) <- readChan f2z 
-    writeChan z2f a
-
   -- Forward messages from honest Bob to the outside Alice
   fork $ forever $ do
     mf <- readChan a2z
@@ -149,12 +144,7 @@ envComZ1 alice2bob bob2alice z2exec (p2z, z2p :: Chan (PID, ComP2F Bool)) (a2z, 
     case mf of
       SttCruptA2Z_P2A (pid, m) | pid == "Bob" -> do
                      liftIO $ putStrLn $ "Z1: intercepted bob2alice"
-                     undefined
                      writeChan bob2alice m
-      _ -> do
-        liftIO $ putStrLn "Problem1"
-        ?pass
-      --SttCruptA2Z_F2A (Optional :: Void) -> writeChan z2a (SttCruptZ2A_A2F v)
 
   -- Forward messages from the "outside" Alice to the honest Bob
   fork $ forever $ do
@@ -164,14 +154,14 @@ envComZ1 alice2bob bob2alice z2exec (p2z, z2p :: Chan (PID, ComP2F Bool)) (a2z, 
 
   return ()
 
-{--
 envComZ2 :: MonadEnvironment m => Bool ->
-  (forall m. MonadAdversary m => Adversary _ _ _ _ _ _ m) ->
-  (forall m. MonadProtocol m => Protocol _ _ _ _ m) ->
-  Environment _ _ _ _ Void Void (Bool, Bool) m
+  (forall m. MonadAdversary m => Adversary (SttCruptZ2A p2p Void) (SttCruptA2Z p2p Void) (ComF2P Bool) (ComP2F Bool) Void Void m) ->
+  (forall m. Protocol (ComP2F Bool) (ComF2P Bool) p2p p2p m) ->
+  Environment (ComF2P Bool) (ComP2F Bool) (SttCruptA2Z p2p Void) (SttCruptZ2A p2p Void) Void Void (Bool, Bool) m
 envComZ2 option s p z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestCommitZ2", show ("Alice", "Bob", ("", "")))
   writeChan z2exec $ SttCrupt_SidCrupt sid (Map.fromList [("Bob",())])
+
 
   alice2bob <- newChan 
   bob2alice <- newChan
@@ -198,40 +188,41 @@ envComZ2 option s p z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   if option then do
               -- Run one copy of the experiment with ideal
-              --liftIO $ putStrLn $ "Z2: running ideal Z1!"
+              liftIO $ putStrLn $ "Z2: running ideal Z1!"
               dbg <- newChan
               fork $ do
                    -- Marker 1
-                   execUC (envComZ1 alice2bob bob2alice) (idealProtocol) (fComDbg dbg) s
+                   execUC (envComZ1 alice2bob bob2alice) (idealProtocol) (fComDbg dbg) (s)
                    return ()
               fork $ do 
                    b' <- readChan dbg
                    writeChan outp (b, b')
   else do
     -- Run one copy of the experiment with real protocol
-    -- liftIO $ putStrLn $ "Z2: running real Z1!"
+    liftIO $ putStrLn $ "Z2: running real Z1!"
     fork $ do
-         -- Marker 2
-         ComF2P_Commit <- execUC (envComZ1 alice2bob bob2alice) (p) (fTwoWay) dummyAdversary
+         -- Marker 2    
+         mf <- execUC (envComZ1 alice2bob bob2alice) (p) (fTwoWay) (dummyAdversary)
+         let ComF2P_Commit = mf
          writeChan outp (b, b)
 
   -- Have Alice commit to a bit
   writeChan z2p ("Alice", ComP2F_Commit b)
 
   return ()
---}
-{--
+
+
 testComZ2TestIdeal :: Bool ->
-  (forall m. MonadAdversary m => Adversary _ _ _ _ Void Void m) ->
-  (forall m. MonadProtocol m => Protocol _ _ _ _ m) -> IO _
+  (forall m. MonadAdversary m => Adversary (SttCruptZ2A a Void) (SttCruptA2Z a Void) (ComF2P Bool) (ComP2F Bool) Void Void m) ->
+  (forall m. MonadProtocol m => Protocol (ComP2F Bool) (ComF2P Bool) a a m) -> IO (Bool, Bool)
 testComZ2TestIdeal b s p = runITMinIO 120 $ execUC (envComZ2 b s p) (idealProtocol) (fCom) s
 
 
 testComZ2TestReal :: Bool ->
-  (forall m. MonadAdversary m => Adversary _ _ _ _ Void Void m) ->
-  (forall m. MonadProtocol m => Protocol _ _ _ _ m) -> IO _
+  (forall m. MonadAdversary m => Adversary (SttCruptZ2A a Void) (SttCruptA2Z a Void) (ComF2P Bool) (ComP2F Bool) Void Void m) ->
+  (forall m. MonadProtocol m => Protocol (ComP2F Bool) (ComF2P Bool) a a m) -> IO (Bool, Bool)
 testComZ2TestReal b s p = runITMinIO 120 $ execUC (envComZ2 b s p) (p) (fTwoWay) dummyAdversary
---}
+
 
 -- [Experiment 0]
 -- This experiment must output (b,b) for any s that makes progress
@@ -241,16 +232,16 @@ expt0 = testComBenignIdeal dummyAdversary
 -- [Experiment 1]
 -- By assuming to the contrary that p realizes fCom, this must also make output (b,b)
 expt1B = testComBenignReal protBindingNotHiding
---expt1H = testComBenignReal protHiding
-{--
+expt1H = testComBenignReal protHiding
+
 
 -- [Experiment 2]
 -- This experiment is *identical* to expt1 by observational equivalence
 -- Although Z2 corrupts Bob, it forwards messages from a correct execution of Bob's protocol.
 -- Note that s is ignored entirely
 expt2 = testComZ2TestReal False 
--- expt2B = expt2 simBindingNotHiding protBindingNotHiding
--- expt2H = expt2 simHiding protHiding
+expt2B = expt2 simBindingNotHiding protBindingNotHiding
+expt2H = expt2 simHiding protHiding
 
 
 -- [Experiment 3]
@@ -258,8 +249,8 @@ expt2 = testComZ2TestReal False
 -- with the internal ideal Z1. Assuming s simulates p, 
 -- these are indistinguishable
 expt3 = testComZ2TestReal True
--- expt3B = expt3 simBindingNotHiding protBindingNotHiding
--- expt3H = expt3 simHiding protHiding 
+expt3B = expt3 simBindingNotHiding protBindingNotHiding
+expt3H = expt3 simHiding protHiding 
 -- In expt3H, the b and b' in the output (b,b') are uncorrelated, since the assumption is violated by the Hiding-Not-Binding protocol
 
 
@@ -268,11 +259,11 @@ expt3 = testComZ2TestReal True
 -- However, here (b,b') must be *uncorrelated*. This is because
 -- sim is simply not given any access to b.
 expt4 = testComZ2TestIdeal True
--- expt4B = expt4 simBindingNotHiding protBindingNotHiding
--- expt4H = expt4 simHiding protHiding
+expt4B = expt4 simBindingNotHiding protBindingNotHiding
+expt4H = expt4 simHiding protHiding
 
 
---}
+
 -- Concrete examples of a (bad) protocol and an ineffective (but type-checking) simulator
 
 data BindingNotHiding_Msg a = BNH_Commit a | BNH_Open deriving Show
@@ -283,22 +274,17 @@ protBindingNotHiding (z2p, p2z) (f2p, p2f) = do
   case () of 
     _ | ?pid == pidS -> do
           mb <- readChan z2p
-          let b = case mb of
-                   ComP2F_Commit b -> b
-                   _ -> error ""
+          let ComP2F_Commit b = mb
           writeChan p2f $ BNH_Commit b
           mb <- readChan z2p
-          let () = case mb of ComP2F_Open -> ()
-                              _ -> error ""
+          let ComP2F_Open = mb
           writeChan p2f $ BNH_Open
     _ | ?pid == pidR -> do
           mb <- readChan f2p
-          let b = case mb of BNH_Commit b -> b
-                             _ -> error ""
+          let BNH_Commit b = mb
           writeChan p2z ComF2P_Commit
           mb <- readChan f2p
-          let () = case mb of BNH_Open -> ()
-                              _ -> error ""
+          let BNH_Open = mb
           writeChan p2z $ ComF2P_Open b
   return ()
 
@@ -327,12 +313,14 @@ simBindingNotHiding (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   if member pidS ?crupt then do
       fork $ do
         -- Handle committing
-        (BNH_Commit b) <- readChan a2s
+        mb <- readChan a2s
+        let (BNH_Commit b) = mb
         liftIO $ putStrLn $ "simCom: writing p2f_Commit"
         writeChan a2p (pidS, ComP2F_Commit b)
 
         -- Handle opening
-        (BNH_Open) <- readChan a2s
+        mb <- readChan a2s
+        let (BNH_Open) = mb
         writeChan a2p (pidS, ComP2F_Open)
       return ()
   else return ()
@@ -340,12 +328,14 @@ simBindingNotHiding (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   if member pidR ?crupt then do
       fork $ do
         -- Handle delivery of commitment
-        ComF2P_Commit <- readChan f2r 
+        mb <- readChan f2r
+        let ComF2P_Commit = mb
         liftIO $ putStrLn $ "simCom: received Commit"
         -- Poor simulation (it's always 0)
         writeChan a2z $ SttCruptA2Z_P2A (pidR, BNH_Commit False)
         -- Handle delivery of opening
-        ComF2P_Open b' <- readChan f2r
+        mb <- readChan f2r
+        let ComF2P_Open b' = mb
         writeChan a2z $ SttCruptA2Z_P2A (pidR, BNH_Open)
       return ()
   else return ()
@@ -358,15 +348,19 @@ protHiding (z2p, p2z) (f2p, p2f) = do
   let (pidS :: PID, pidR :: PID, ssid :: SID) = read $ snd ?sid
   case () of 
     _ | ?pid == pidS -> do
-            ComP2F_Commit b <- readChan z2p
+            mb <- readChan z2p
+            let ComP2F_Commit b = mb
             writeChan p2f $ Hiding_Commit
-            ComP2F_Open <- readChan z2p
+            mb <- readChan z2p
+            let ComP2F_Open = mb
             writeChan p2f $ Hiding_Open b
     _ | ?pid == pidR -> do
-            Hiding_Commit <- readChan f2p
+            mb <- readChan f2p
+            let Hiding_Commit = mb
             writeChan p2z ComF2P_Commit
-            Hiding_Open b <- readChan f2p
-            writeChan p2z $ ComF2P_Open b          
+            mb <- readChan f2p
+            let Hiding_Open b = mb
+            writeChan p2z $ ComF2P_Open b
   return ()
 
 
@@ -392,26 +386,30 @@ simHiding (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   if member pidS ?crupt then do
       fork $ do
         -- Handle committing
-        Hiding_Commit <- readChan a2s
+        mb <- readChan a2s
+        let Hiding_Commit = mb
         -- Can't simulate very well - generate a random bit
         b <- getBit
         liftIO $ putStrLn $ "sim: writing p2f_Commit"
         writeChan a2p (pidS, ComP2F_Commit b)
 
         -- Handle opening
-        (Hiding_Open b') <- readChan a2s
+        mb <- readChan a2s
+        let (Hiding_Open b') = mb
         writeChan a2p (pidS, ComP2F_Open)
       return ()
   else return ()
   if member pidR ?crupt then do
       fork $ do
         -- Handle delivery of commitment
-        ComF2P_Commit <- readChan f2r 
+        mb <- readChan f2r
+        let ComF2P_Commit = mb
         liftIO $ putStrLn $ "simCom: received Commit"
         -- Easy to simulate
         writeChan a2z $ SttCruptA2Z_P2A (pidR, Hiding_Commit)
         -- Handle delivery of opening
-        ComF2P_Open b <- readChan f2r
+        mb <- readChan f2r
+        let ComF2P_Open b = mb
         writeChan a2z $ SttCruptA2Z_P2A (pidR, Hiding_Open b)
       return ()
   else return ()
@@ -452,51 +450,43 @@ protComm (z2p, p2z) (f2p, p2f) = do
     _ | ?pid == pidS -> do
           -- Wait for commit instruction
           mb <- readChan z2p
-          let b = case mb of ComP2F_Commit b -> b
-                             _ -> error ""
+          let ComP2F_Commit b = mb
           -- Generate the blinding
           nonce :: Int <- getNbits 120
           -- Query the random oracle
           writeChan p2f $ RoP2F_Ro (nonce, b)
           mh <- readChan f2p
-          let h = case mh of RoF2P_Ro h -> h
-                             _ -> error ""
+          let RoF2P_Ro h = mh
           writeChan p2f $ RoP2F_m (ProtComm_Commit h)
 
           -- Wait for open instruction
           mb <- readChan z2p
-          let () = case mb of ComP2F_Open -> ()
-                              _ -> ()
+          let ComP2F_Open = mb
           writeChan p2f $ RoP2F_m (ProtComm_Open nonce b)
 
     _ | ?pid == pidR -> do
           mh <- readChan f2p
-          let h = case mh of RoF2P_m (ProtComm_Commit h) -> h
-                             _ -> error ""
+          let RoF2P_m (ProtComm_Commit h) = mh
           writeChan p2z ComF2P_Commit
           mh <- readChan f2p
-          let (nonce,b) = case mh of RoF2P_m (ProtComm_Open nonce b) -> (nonce,b)
-                                     _ -> error ""
+          let RoF2P_m (ProtComm_Open nonce b) = mh
           -- Query the RO 
           writeChan p2f $ RoP2F_Ro (nonce, b)
           mh <- readChan f2p
-          let h' = case mh of RoF2P_Ro h' -> h'
-                              _ -> error ""
+          let RoF2P_Ro h' = mh
           if not (h' == h) then error "hash mismatch" else return ()
 
           -- Output
           writeChan p2z $ ComF2P_Open b
 
 
-simComm :: MonadAdversary m => Adversary (SttCruptZ2A (RoP2F (Int,Bool) (ProtComm_Msg Bool)) c) (PID, RoF2P b) (ComF2P Bool) (ComP2F Bool) Void Void m
+simComm :: MonadAdversary m => Adversary (SttCruptZ2A (RoP2F (Int,Bool) (ProtComm_Msg Bool)) c) (PID, RoF2P (ProtComm_Msg Bool)) (ComF2P Bool) (ComP2F Bool) Void Void m
 simComm (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   -- Parse sid as defining two players
   let (pidS :: PID, pidR :: PID, ssid :: SID) = read $ snd ?sid
 
   a2s <- newChan
   a2r <- newChan
-  f2r <- newChan
-  f2s <- newChan
 
   fork $ forever $ do
     mf <- readChan z2a
@@ -506,11 +496,6 @@ simComm (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
                                         | pid == pidR -> do
                      liftIO $ putStrLn $ "sim: z2a a2p r " -- ++ show m
                      writeChan a2r m
-                                          
-{--  fork $ forever $ do
-    (pid, m) <- readChan p2a
-    case () of _ | pid == pidS -> writeChan f2s m
-               _ | pid == pidR -> writeChan f2r m--}
 
   -- Internalize the RO
   table     <- newIORef Map.empty -- map x to h(x)
@@ -558,21 +543,31 @@ simComm (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   else return ()
 
   if member pidR ?crupt then do
-      fork $ do
-        -- Handle delivery of commitment
-        mb <- readChan f2r
-        let () = case mb of ComF2P_Commit -> ()
-                            _ -> error ""
-        liftIO $ putStrLn $ "simCom: received Commit"
-        -- Easy to simulate
-        -- writeChan a2z $ SttCruptA2Z_P2A (pidR, RoF2P_m $ ProtComm_Commit undefined)
-        -- Handle delivery of opening
-        mb <- readChan f2r
-        let ComF2P_Open b = mb
-        -- writeChan a2z $ SttCruptA2Z_P2A (pidR, RoF2P_m $ ProtComm_Open undefined b)
-        return ()
-      return ()
-  else return ()--}
+   fork $ do
+    -- Functionality
+    (_, mf) <- readChan p2a
+    let ComF2P_Commit = mf
+    -- Have to simulate honest committer's hash
+    h <- getNbits 120
+    writeChan a2z (pidR, RoF2P_m (ProtComm_Commit h))
+
+    (_, mf) <- readChan p2a
+    let ComF2P_Open b = mf
+    -- Need to program the random oracle
+    nonce <- getNbits 120
+    modifyIORef table (Map.insert (nonce,b) h)
+    writeChan a2z (pidR, RoF2P_m (ProtComm_Open nonce b))
+
+   fork $ do
+    -- Corrupt receiver
+    mh <- readChan a2r
+    let RoP2F_Ro q = mh
+    tbl <- readIORef table
+    let Just h = Map.lookup q tbl
+    writeChan a2z (pidR, RoF2P_Ro h)
+   return ()
+  else return ()
+
   return ()
 
 
@@ -583,10 +578,3 @@ testComBenignRoReal = runITMinIO 120 $ execUC envComBenign (protComm) (fTwoWayAn
 testComBenignRoIdeal :: IO (Bool, Bool)
 testComBenignRoIdeal = runITMinIO 120 $ execUC envComBenign (idealProtocol) (fCom) simComm
 
-{--
-testComZ2RoReal :: IO _
-testComZ2RoReal = runITMinIO 120 $ execUC  (envComZ2 False simComm protComm) (protComm) (fTwoWayAndRO) (dummyAdversary)
---}
---testComZ2RoIdeal :: IO _
---testComZ2RoIdeal = runRand $ execUC (envComZ2 False simComm protComm) (idealProtocol) (runOptLeak fCom) simComm
---}

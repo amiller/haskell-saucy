@@ -237,6 +237,7 @@ dummyFunctionality (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     writeChan (f2a) $ m
   return ()
 
+idealProtocol :: MonadProtocol m => Protocol a b b a m
 idealProtocol (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     m <- readChan z2p
