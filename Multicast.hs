@@ -39,7 +39,7 @@ fMulticast (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
           forMseq_ parties $ \pidR -> do
              eventually $ writeChan f2p (pidR, MulticastF2P_Deliver m)
           writeChan f2p (pidS, MulticastF2P_OK)
-        else fail "multicast activated not by sender"
+        else error "multicast activated not by sender"
   else do
       -- If sender is corrupted, arbitrary messages can be delivered (once) to parties in any order
       delivered <- newIORef (empty :: Map PID ())
@@ -76,7 +76,7 @@ protMulticast (z2p, p2z) (f2p, p2f) = do
           readChan cOK
         writeChan p2z MulticastF2P_OK
 
-    else fail "multicast activated not by sender"
+    else error "multicast activated not by sender"
 
   -- Messages send from other parties are relayed here
   fork $ forever $ do
@@ -119,7 +119,8 @@ simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
         -- If the "ideal" leak buffer contains "Multicast m",
         -- then the "real" leak buffer should contain [(pid, (sid, m)] for every party
         writeChan a2f (Left ClockA2F_GetLeaks)
-        (Left (ClockF2A_Leaks buf)) <- readChan f2a
+        _mb <- readChan f2a
+        let (Left (ClockF2A_Leaks buf)) = _mb
         let extendRight conf = show ("", conf)
         let resp = case buf of
               []       ->  []

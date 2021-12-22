@@ -104,30 +104,22 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         let rq' = rq ++ [m]
         writeIORef runqueue rq'
 
-  -- [TODO]
-{--                                 
+
+  -- TODO: add the "delay" option to the environment
+  
   -- Allow the environment to force progress along
   fork $ forever $ do
     ClockZ2F_MakeProgress <- readChan z2f
     liftIO $ putStrLn $ "[fAsync] MakeProgress"
-    r <- readIORef round
-    buf <- readIORef buffer
-    let rbuf = Map.findWithDefault [] r buf
-    liftIO $ putStrLn $ "[fAsync]" ++ show buf
-    if length rbuf > 0 then do
+    rq <- readIORef runqueue
+    if length rq > 0 then do
         -- Deliver the first message, remove it from buffer
-        let cb = rbuf !! 0
-        writeIORef buffer $ Map.insert r (drop 1 rbuf) buf
+        let callback = rq !! 0
+        let rq' = deleteAtIndex 0 rq
+        writeIORef runqueue rq'
         liftIO $ putStrLn $ "[fAsync] sending callback"
-        ?duplexWrite $ ClockPeerOut_Callback cb
-    else do
-        -- Advance the round
-        writeIORef buffer $ Map.delete r buf
-        writeIORef round $ (r+1)
-        liftIO $ putStrLn $ "[fAsync] round over"
-        writeChan f2z $ ClockF2Z_Round (r+1)
---}
-
+        callback
+    else error "underflow"
 
   let ?eventually = _eventually; ?leak = _leak in
     f (p2f, f2p) (a2f', f2a') (z2f', f2z)
@@ -295,9 +287,9 @@ testAsyncBang :: IO String
 testAsyncBang = runITMinIO 120 $ execUC testEnvAsyncBang (idealProtocol) (runAsyncF $ bangFAsync fAuth) dummyAdversary
 
 
-{--
-{-- Example environments using !fAuth --}
 
+{-- Counter example of why !Async(F) does not work, even though Async(!F) is OK --}
+{--
 testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let sid = ("sidTestAuthAsync", "")
   writeChan z2exec $ SttCrupt_SidCrupt sid empty

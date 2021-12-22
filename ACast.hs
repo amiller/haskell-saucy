@@ -34,7 +34,7 @@ data ACastF2P a = ACastF2P_OK | ACastF2P_Deliver a deriving Show
 --data ACastA2F a = ACastA2F_Deliver PID deriving Show
 
 assertNothing Nothing = return ()
-assertNothing _ = fail "Not nothing"
+assertNothing _ = error "Not nothing"
 
 fACast :: MonadFunctionalityAsync m a => Functionality (ACastP2F a) (ACastF2P a) Void Void Void Void m
 fACast (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
@@ -211,7 +211,8 @@ testEnvACastIdeal z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Empty the queue
   let checkQueue = do
         writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
-        SttCruptA2Z_F2A (Left (ClockF2A_Count c)) <- readChan a2z
+        mb <- readChan a2z
+        let SttCruptA2Z_F2A (Left (ClockF2A_Count c)) = mb
         liftIO $ putStrLn $ "Z[testEnvACastIdeal]: Events remaining: " ++ show c
         return (c > 0)
 
@@ -249,7 +250,8 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Empty the queue
   let checkQueue = do
         writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
-        SttCruptA2Z_F2A (Left (ClockF2A_Count c)) <- readChan a2z
+        mb <- readChan a2z
+        let SttCruptA2Z_F2A (Left (ClockF2A_Count c)) = mb
         liftIO $ putStrLn $ "Z[testEnvACastIdeal]: Events remaining: " ++ show c
         return (c > 0)
 
