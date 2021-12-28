@@ -12,7 +12,8 @@ import Control.Monad (forever,foldM)
 
 import Data.Poly
 import Data.Field.Galois (Prime, toP)
-import Data.Vector (forM,fromList)
+import Data.Vector (Vector,forM,fromList)
+import qualified Data.Vector ((++))
 
 import ProcessIO
 import StaticCorruptions
@@ -27,27 +28,54 @@ type MonadMPC_F m = (MonadFunctionality m,
                      ?t :: Int)
 
 {--
- We model MPC as a service that keeps track of secret data.
- A sequence of operations are chosen by the adversary,
-  but become common knowledge.
- Inputs are provided by a designated client.
+ We model MPC as a service that keeps track of a table of secret data,
+  but computes a given sequence of operations on this data.
+
+ We have to ensure that all the MPC parties agree on the opcode sequence.
+ To do this in a flexible way, we let the adversary adaptively choose the
+  opcode sequence, but the sequence becomes common knowledge to the honest
+  parties so they can follow along.
+
+ Inputs are similarly provided by the adversary.
 
  The operations available to the service are
-  LIN, OPEN, RAND.
+  OPEN, LIN, RAND, CONST.
 
  - OPEN reveals the entire secret share.
  - LIN returns a linear combination of existing values
+ - RAND returns preprocessing
+ - CONST lifts a public scalar Fq to a secret sharing
 
  We can show how to extend the functionality with more complex operations
- like
-  MULT.
+ like MULT, as an intermediate operation.
+
+ The MPC keeps track of not just the secret data, but the entire secret
+  sharing polynomial. The final application, fComp, evaluates an entire
+  arithmetic circuit and abstracts away the secret sharing polynomials.
+
+ Overall, our construction plan is:
+   fMPC_sansMult  ---Beaver--> fMPC ---Circuit---> fComp
+
  --}
 
-data FmpcOp sh = MULT sh sh sh | LIN sh Fq [(Fq,sh)] | INPUT sh Fq | RAND sh sh sh | OPEN sh
+data FmpcOp sh = MULT sh sh
+               | LIN [(Fq,sh)]
+               | CONST Fq
+               | INPUT
+               | RAND
+               | OPEN sh deriving (Eq, Show)
 
-type Sh = Int
-data FmpcP2F = FmpcP2F_Op (FmpcOp Sh) | FmpcP2F_Read Sh | FmpcP2F_MyShare Sh
-data FmpcF2P = FmpcF2P_Ok | FmpcF2P_Open Fq | FmpcF2P_Share Fq
+data FmpcRes sh = FmpcRes_Ok
+                | FmpcRes_Fq Fq
+                | FmpcRes_Sh sh
+                | FmpcRes_Trip (sh,sh,sh) deriving Show
+                
+
+
+data FmpcP2F sh = FmpcP2F_Op (FmpcOp sh)
+                | FmpcP2F_MyShare sh
+data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
+                | FmpcF2P_MyShare Fq
 
 
 {----
@@ -91,148 +119,218 @@ Environment asks an honest party to query for one of the ephemeral values, it wo
 
 --type MonadFMPC = MonadFMPC
 
-mpcBeaver :: MonadMPCProtocol m sh => sh -> sh -> m sh
+mpcBeaver :: MonadMPCProgram m sh => sh -> sh -> m sh
 mpcBeaver x y = do
   (a,b,ab) <- getTriple
-  d <- ?openShare =<< sub x a 
-  e <- ?openShare =<< sub y b
-  xy <- ?fresh
-  de <- ?op CONST (d*e 
-  ?op $ LIN xy [(1,ab),(d,a),(e,b)]
+  d <- openShare =<< sub x a 
+  e <- openShare =<< sub y b
+  de <- constant (d*e)
+  xy <- lin [(1,de),(1,ab),(d,b),(e,a)]
   return xy
 
-sub :: MonadMPCProtocol m sh => sh -> sh -> m sh
-sub x a = do
-  x_a <- ?fresh
-  ?op $ LIN x_a 1 [(1,x),(-1,a)]
-  return x_a
+openShare sh = do
+  mp <- ?op $ OPEN sh
+  let FmpcRes_Fq x = mp
+  return x
 
-getTriple :: MonadMPCProtocol m sh => m (sh,sh,sh)
+lin xs = do
+  rsp <- ?op $ LIN xs
+  let FmpcRes_Sh r = rsp
+  return r
+
+constant v = do
+  rsp <- ?op $ CONST v
+  let FmpcRes_Sh r = rsp
+  return r
+
+sub :: MonadMPCProgram m sh => sh -> sh -> m sh
+sub x a = lin [(1,x),(-1,a)]
+
+getTriple :: MonadMPCProgram m sh => m (sh,sh,sh)
 getTriple = do
-  a <- ?fresh; b <- ?fresh; ab <- ?fresh;
-  ?op $ RAND a b ab
+  r <- ?op $ RAND
+  let FmpcRes_Trip(a,b,ab) = r
   return (a,b,ab)
 
-type MonadMPCProtocol m sh = (Monad m,
-                              ?op        :: FmpcOp sh -> m (),
-                              ?openShare :: sh -> m Fq,
-                              ?fresh     :: m sh)
+type MonadMPCProgram m sh = (Monad m,
+                             ?op :: FmpcOp sh -> m (FmpcRes sh))
 
-runMPCprot :: MonadProtocol m =>
-   (forall sh. MonadMPCProtocol m sh => m sh) -> m ()
-runMPCprot m = do
-   let ?op = undefined in
-    let ?openShare = undefined in
-     let ?fresh = undefined in
-       m
+
+runMPCnewmul :: MonadProtocol m =>
+    (forall sh. MonadMPCProgram m sh => sh -> sh -> m sh) ->
+    Protocol (FmpcP2F sh) (FmpcF2P sh) (FmpcF2P sh) (FmpcP2F sh) m
+runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
+
+   let _op opcode = do
+         writeChan p2f $ FmpcP2F_Op opcode
+         res <- readChan f2p
+         let (FmpcF2P_Op r) = res
+         return r
+  
+   fork $ forever $ do
+        zp <- readChan z2p
+        case zp of
+          FmpcP2F_Op (MULT x y) -> do
+             -- Intercept the "MULT" operations and replace them with
+             -- a call to the MPC program
+             xy <- let ?op = _op in mulProg x y
+             writeChan p2z $ FmpcF2P_Op (FmpcRes_Sh xy)
+          _ -> do
+             -- Everything else, we can simply forward along and 
+             -- expect one response
+             writeChan p2f $ zp
+             readChan f2p >>= writeChan p2z
+
    return ()
 
-{--
-  let ?open k:
-    send OP to.
-  let ?plus
---}
 
 zero :: PolyFq
 zero = polyFromCoeffs []
 
-fMPC (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  memory <- newIORef (Map.empty :: Map Sh PolyFq)
-  ops    <- newIORef []
-  opened <- newIORef Map.empty
+randomWithZero :: MonadITM m => Int -> Fq -> m PolyFq
+randomWithZero t z = do
+  -- Random degree t polynomial phi, such that phi(0) = z
+  coeffs <- forM (fromList [1..(t-1)]) (\_ -> randFq)
+  return $ toPoly $ fromList [z] Data.Vector.++ coeffs
 
-  -- Read operations from
+type Sh = Int
+fMPC :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
+fMPC = fMPC_ True
+
+fMPC_sansMul :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
+fMPC_sansMul = fMPC_ False
+
+fMPC_ hasMul (p2f, f2p) _ _ = do
+  -- Maps share IDs to polynomials
+  shareTbl <- newIORef (Map.empty :: Map Sh PolyFq)
+
+  -- List of operations and results (chosen by Input party)
+  ops    <- newIORef ([] :: [(FmpcOp Sh, FmpcRes Sh)])
+
+  -- Counters viewed by each of the participant parties
+  let initCtrs = [("P:"++show i, 0) | i <- [1.. ?n]]
+  counters <- newIORef $ Map.fromList initCtrs
+
+  -- Generate a fresh handle
+  freshCtr <- newIORef 0
+  let fresh = do
+        x <- readIORef freshCtr
+        modifyIORef freshCtr $ (+) 1
+        return x
+
+  -- Commit this operation and output to the log
+  let commit op outp = do
+        modifyIORef ops $ (++ [(op,outp)])
+        writeChan f2p $ ("InputParty", FmpcF2P_Op outp)
+
   fork $ forever $ do
    (pid,m) <- readChan p2f
    case m of
-     FmpcP2F_Op op -> do
-
-     -- Append the op to the log
-     modifyIORef ops $ (++) [op]
-
-     -- Dispatch according to the op
+    -- Operations from MPC parties are in "Follow" mode.
+    -- They have to provide a next op, which is matched up
+    -- against the next one chosen by the input party.
+    -- They receive the output, typically a handle.
+    FmpcP2F_Op op | not (pid == "InputParty") -> do
+     ctbl <- readIORef counters
+     let Just c = Map.lookup pid ctbl
+     oplist <- readIORef ops
+     let (op',res) = oplist !! c
+     if op == op' then do
+       modifyIORef counters $ Map.insert pid (c+1)
+       writeChan f2p $ (pid, FmpcF2P_Op res)
+     else do
+       liftIO $ putStrLn $ show oplist
+       liftIO $ putStrLn $ show ctbl
+       liftIO $ putStrLn $ show op
+       liftIO $ putStrLn $ show op'
+       error "follow mode failed" 
+     
+    FmpcP2F_Op op | pid == "InputParty" -> do
+     -- Operations send from the input party get carried out
+     -- immediately and committed to the log of operations.
      case op of
-       MULT xy x y -> do
-         if True then undefined else undefined
-         return ()
+       MULT x y -> do
+         -- This is a parameter so we can show how to realize it from
+         -- the other operations. Generates a random polynomial whose
+         -- zero-value coincides with the product of x and y
+         if hasMul then do
+           tbl <- readIORef shareTbl
+           let Just xx = Map.lookup x tbl
+           let Just yy = Map.lookup y tbl
+           xy <- fresh
+           phi <- randomWithZero ?t (eval xx 0 * eval yy 0)
+           modifyIORef shareTbl $ Map.insert xy phi
+           commit op $ FmpcRes_Sh xy
 
-       LIN k o cs -> do
+         else error "mult unimplemented"
+
+       LIN cs -> do
+         -- Construct a new secret sharing polynomial simply by
+         -- scaling and summing the linear combination of existing
+         -- polys from the table
+         k <- fresh
          r <- foldM (\r -> \(c::Fq,x::Sh) ->  do
-                     tbl <- readIORef memory
+                     tbl <- readIORef shareTbl
                      let Just xx = Map.lookup x tbl
-                     return $ r + (toPoly $ fromList [c]) * xx) zero cs
-         modifyIORef memory $ Map.insert k r
-         return ()
+                     return $ r + (polyFromCoeffs [c]) * xx) zero cs
+         modifyIORef shareTbl $ Map.insert k r
+         commit op $ FmpcRes_Sh k
 
        OPEN k -> do
-         modifyIORef opened $ Map.insert k ()
-          
-       RAND ka kb kab -> do
+         -- The result of opening is included directly in the log
+         tbl <- readIORef shareTbl
+         let Just phi = Map.lookup k tbl
+         commit op $ FmpcRes_Fq (eval phi 0)
+
+       CONST v -> do
+         -- Create the constant (degree-0) poly
+         k <- fresh
+         let phi = polyFromCoeffs [v]
+         modifyIORef shareTbl $ Map.insert k phi
+         commit op $ FmpcRes_Sh k
+
+       RAND -> do
+         -- Return a beaver triple
+         ka <- fresh; kb <- fresh; kab <- fresh
          a <- randomDegree ?t
          b <- randomDegree ?t
-         let aa :: Fq = eval a 0
-         let bb :: Fq = eval b 0
-         coeffs <- forM ([1..(?t-1)]::Vector Int) (\_ -> randFq)
-         let ab = toPoly $ (fromList [aa * bb]) ++ coeffs
-         modifyIORef memory $ Map.insert ka a
-         modifyIORef memory $ Map.insert kb b
-         modifyIORef memory $ Map.insert kab ab
+         ab <- randomWithZero ?t (eval a 0 * eval b 0)
+         modifyIORef shareTbl $ Map.insert ka a
+         modifyIORef shareTbl $ Map.insert kb b
+         modifyIORef shareTbl $ Map.insert kab ab
+         commit op $ FmpcRes_Trip (ka, kb, kab)
 
-       INPUT key s -> do
-        x <- readChan p2f
-        return ()
-
-  -- Read requests from honest parties
-  fork $ forever $ do
-     (pid, pf) <- readChan p2f
-     -- leak (pid,"Req")
-     optionally $ do
-          -- Return the write value
-          writeChan f2p (pid, undefined)
-
-
-fOpen :: MonadMPC_F m => Functionality () Fq a2f f2a z2f f2z m
-fOpen (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  -- Wait to collect shares from (t+1) honest parties
-  shares <- newIORef Map.empty
-  
-  fork $ forever $ do
-    (pid, sh) <- readChan p2f
-    return ()
+       INPUT -> do
+         -- TODO: Collect input from the input party some other way?
+         k <- fresh
+         commit op $ FmpcRes_Sh k
 
   return ()
 
 
 
-fGetRand :: MonadMPC_F m => Functionality () Fq a2f f2a z2f f2z m
-fGetRand (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  -- Sample a random degree-t poly
-  -- Send it to each party
-  phi <- randomDegree ?t
-  fork $ forever $ do
-    (pid, ()) <- readChan p2f
-    let i :: Integer = readNote pid "couldn't parse player number"
-    writeChan f2p (pid, eval phi (toP i))
-  return ()
-
-
-fBeaverTriple :: (MonadMPC_F m, MonadOptionally m) => Functionality p2f f2p a2f f2a Void Void m
-fBeaverTriple (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
-  -- Receive share from every honest party
-  -- Sample a new polynomial
-  optionally $ do
-     undefined
-
-
-
-envTestMPC :: MonadEnvironment m => Environment _ _ _ _ Void Void String m
+envTestMPC :: MonadEnvironment m => Environment (FmpcF2P sh) (FmpcP2F sh) _ _ Void Void String m
 envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
    -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") empty
 
+  -- Opened Values
+  openTable <- newIORef $ Map.fromList [("P:"++show i, []) | i <- [1.. 3]]
+  -- Share table
+  lastHandle <- newIORef Nothing
+  
   fork $ forever $ do
-    x <- readChan p2z
-    liftIO $ putStrLn $ "Z: p sent " -- ++ show x
+    (pid,x) <- readChan p2z
+    case x of
+      FmpcF2P_Op (FmpcRes_Fq r) -> do
+        -- Append openings
+        modifyIORef openTable $ Map.insertWith (++) pid [r]
+        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Fq " ++ show r
+      FmpcF2P_Op (FmpcRes_Sh sh) -> do
+        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Sh "
+        writeIORef lastHandle $ Just sh
+      _ -> do
+        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent something"
     ?pass
 
   fork $ forever $ do
@@ -242,17 +340,31 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   () <- readChan pump
   liftIO $ putStrLn "pump"
-  writeChan z2p ("1", ())
+  writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 2)
 
-  readChan pump
+  () <- readChan pump
+  liftIO $ putStrLn "pump"
+  _sh <- readIORef lastHandle; let Just x = _sh
+  writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 5)
 
+  () <- readChan pump
+  liftIO $ putStrLn "pump"
+  _sh <- readIORef lastHandle; let Just y = _sh  
+  writeChan z2p ("InputParty", FmpcP2F_Op $ MULT x y)
 
-{- MPC Protocols -}
+  () <- readChan pump
+  liftIO $ putStrLn "pump"
+  _sh <- readIORef lastHandle; let Just xy = _sh    
+  writeChan z2p ("InputParty", FmpcP2F_Op $ OPEN xy)
 
-myID :: MonadMPC_P m => m Int
-myID = let (i::Int) = readNote "pid" ?pid in return i
+  () <- readChan pump
+  writeChan outp "environment output: 1"
 
-type MonadMPC_P m = (MonadProtocol m,
-                     ?i :: Int,
-                     ?n :: Int,
-                     ?t :: Int)
+runMPCFunc :: MonadFunctionality m => Int -> Int ->
+    (MonadMPC_F m => Functionality a b c d e f m) ->
+     Functionality a b c d e f m
+runMPCFunc n t f = let ?n = n; ?t = t in f
+
+testMpc1 = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3 1 $ fMPC) dummyAdversary
+
+testMpc2 = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFunc 3 1 $ fMPC_sansMul) dummyAdversary
