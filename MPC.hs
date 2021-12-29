@@ -52,16 +52,15 @@ data Void
   but also the entire secret sharing polynomial.
 
  Since our MPC model is designed to demonstrate the compositional style of UC,
+  we show off a layered construction MULT, where `fMPC` with MULT present
+  is built on top of a simplified `fMPC_sansMult` where it isn't.
 
-
- The final application `fCircMPC` evaluates an entire arithmetic circuit and
-  abstracts away the secret sharing polynomials.
-
- To summarize, our construction plan is:
+ To summarize, our overall construction plan is:
    fMPC_sansMult  ---Beaver---> fMPC ---Adaptor---> fABB
-
  --}
 
+-- First a test program to illustrate the high-level
+-- application interface of fABB.
 mpcCircuitTest :: MonadMPCProgram m sh => m Fq
 mpcCircuitTest = do
   alice <- input
@@ -73,6 +72,7 @@ mpcCircuitTest = do
 
   result <- openShare abc
   return result
+
 
 openShare sh = do
   mp <- ?op $ OPEN sh
@@ -89,6 +89,24 @@ mult x y = do
   mp <- ?op $ MULT x y
   let FmpcRes_Sh xy = mp
   return xy
+
+data FmpcOp sh = INPUT
+               | OPEN sh
+               | LIN [(Fq,sh)]
+               | CONST Fq
+               | MULT sh sh
+               | RAND deriving (Eq, Show)
+
+data FmpcRes sh = FmpcRes_Ok
+                | FmpcRes_Fq Fq
+                | FmpcRes_Sh sh
+                | FmpcRes_Trip (sh,sh,sh) deriving Show
+
+type MonadMPCProgram m sh = (MonadIO m,
+                             ?op :: FmpcOp sh -> m (FmpcRes sh))
+
+
+-- Running the application as a protocol using fABB
 
 data TestAbbZ2P = TestAbbZ2P_Inputs (Fq,Fq,Fq)
                 | TestAbbZ2P_Log 
@@ -129,18 +147,20 @@ runAbbTestProg mpcProg (z2p,p2z) (f2p,p2f) = do
       
    return ()
 
+
+-- Defining the fABB functionality (the main body of it comes later)
 type Sh = Int
 
 fABB :: MonadFunctionality m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
-fABB = let ?n = 0; ?t = 0 in -- these are unused
-         fMPC_ False True
+fABB = let ?n = 0; ?t = 0 in fMPC_ False True
 
--- Stunning.... the Sh type is parametric in the Z2P/P2Z channels, but Concrete from the viewpoint of the adversary
+
+-- Stunning.... the Sh type is parametric in the Z2P/P2Z channels, but Concrete from the viewpoint of the Z2A/A2Z channels. The parametric Sh type enforces the "subroutine respecting" property from UC, namely that the environment (and therefore also any composed protocols) do not access intermediate values (like D,E in beaver multiplication) encapsulated by a subroutine. On the other hand, the adversary and corrupted parties can access their shares of any value they want.
 
 envTestAbb :: MonadEnvironment m =>
   Environment (TestAbbP2Z sh) (TestAbbZ2P) (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void) Void Void String m
 envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
-   -- Choose the sid and corruptions
+  -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") (Map.fromList [("Observer",())])
   
   fork $ forever $ do
@@ -172,22 +192,11 @@ envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
 testMpc0 = runITMinIO 120 $ execUC envTestAbb (runAbbTestProg mpcCircuitTest) (fABB) dummyAdversary
 
--- Here are the data definitions
-data FmpcOp sh = INPUT
-               | OPEN sh
-               | LIN [(Fq,sh)]
-               | CONST Fq
-               | MULT sh sh
-               | RAND deriving (Eq, Show)
 
-data FmpcRes sh = FmpcRes_Ok
-                | FmpcRes_Fq Fq
-                | FmpcRes_Sh sh
-                | FmpcRes_Trip (sh,sh,sh) deriving Show
-
-type MonadMPCProgram m sh = (Monad m,
-                             ?op :: FmpcOp sh -> m (FmpcRes sh))
-
+{--
+   Here we return to fill out some missing definitions,
+   the table of MPC opcodes, and the functionality shell
+   for that we'll customize. --}
 
 data FmpcP2F sh = FmpcP2F_Op (FmpcOp sh)
                 | FmpcP2F_Log
@@ -198,44 +207,150 @@ data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
                 | FmpcF2P_Log [(FmpcOp sh,FmpcRes sh)]
                 | FmpcF2P_Ok
                 | FmpcF2P_MyShare Fq
+
+doAbbOp :: (MonadIO m) => IORef (Map Sh Fq) -> m Sh -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
+doAbbOp secretTable fresh inputs op = do
+     case op of
+       MULT x y -> do
+         -- Create a new entry by multiplying two existing ones
+         tbl <- readIORef secretTable
+         let Just xx = Map.lookup x tbl
+         let Just yy = Map.lookup y tbl
+         xy <- fresh
+         modifyIORef secretTable $ Map.insert xy (xx*yy)
+         return $ FmpcRes_Sh xy
+
+       LIN cs -> do
+         -- Create a new entry from a linear combination of existing ones
+         k <- fresh
+         r <- foldM (\r -> \(c::Fq,x::Sh) -> do
+            tbl <- readIORef secretTable
+            let Just xx = Map.lookup x tbl
+            return $ r + c * xx) 0 cs
+         modifyIORef secretTable $ Map.insert k r
+         return $ FmpcRes_Sh k
+
+       OPEN k -> do
+         -- Publish this value in the log
+         tbl <- readIORef secretTable
+         let Just x = Map.lookup k tbl
+         return $ FmpcRes_Fq x
+
+       INPUT -> do
+         -- Collect inputs provided by the input party
+         k <- fresh
+         inps <- readIORef inputs
+         let x:rest = inps
+         writeIORef inputs rest
+         modifyIORef secretTable $ Map.insert k x
+         return $ FmpcRes_Sh k
   
 
+fMPC_ :: MonadMPC_F m => Bool -> Bool -> Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
+fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
+
+  -- Log of operations and results
+  ops    <- newIORef ([] :: [(FmpcOp Sh, FmpcRes Sh)])
+
+  -- Inputs provided by input party
+  inputs <- newIORef []
+
+  -- Table of secret data
+  secretTbl <- newIORef (Map.empty :: Map Sh Fq)
+
+  -- Generate a fresh handle
+  freshCtr <- newIORef 0
+  let fresh = do
+        x <- readIORef freshCtr
+        modifyIORef freshCtr $ (+) 1
+        return x
+
+  -- For MPC only....
+  -- Maps share IDs to polynomials
+  shareTbl <- newIORef (Map.empty :: Map Sh PolyFq)
+
+  -- Counters viewed by each of the participant parties
+  let initCtrs = [("P:"++show i, 0) | i <- [1.. ?n]]
+  counters <- newIORef $ Map.fromList initCtrs
+
+
+  -- Commit this operation and output to the log
+  let commit op outp = do
+        modifyIORef ops $ (++ [(op,outp)])
+        writeChan f2p $ ("InputParty", FmpcF2P_Op outp)
+
+  fork $ forever $ do
+   (pid,m) <- readChan p2f
+   case m of
+    -- Anyone can see the log
+    FmpcP2F_Log -> do
+       log <- readIORef ops
+       writeChan f2p (pid, FmpcF2P_Log log)
+
+    -- Only the input party can provide inputs
+    FmpcP2F_Input x | pid == "InputParty" -> do
+       modifyIORef inputs $ (++ [x])
+       writeChan f2p (pid, FmpcF2P_Ok)
+
+    -- Operations send from the input party get carried out
+    -- immediately and committed to the log of operations.
+    FmpcP2F_Op op | pid == "InputParty" -> do
+     if hasMPC then do
+       res <- doMpcOp hasMult shareTbl fresh inputs op
+       commit op res
+     else do
+       res <- doAbbOp secretTbl fresh inputs op
+       commit op res
+     
+    -- Operations from MPC parties are in "Follow" mode.
+    -- They have to provide a next op, which is matched up
+    -- against the next one chosen by the input party.
+    -- They receive the output, typically a handle.
+    FmpcP2F_Op op | hasMPC && (not (pid == "InputParty")) -> do
+     ctbl <- readIORef counters
+     let Just c = Map.lookup pid ctbl
+     oplist <- readIORef ops
+     let (op',res) = oplist !! c
+     if op == op' then do
+       modifyIORef counters $ Map.insert pid (c+1)
+       writeChan f2p $ (pid, FmpcF2P_Op res)
+     else error "follow mode failed"
+
+    FmpcP2F_MyShare sh | hasMPC -> do
+     -- Parse from pid
+     i <- return 1
+     tbl <- readIORef shareTbl
+     let Just phi = Map.lookup sh tbl
+     let x = eval phi i
+     writeChan f2p $ (pid, FmpcF2P_MyShare x)
+
+    _ -> do
+     error "unmatched operation"
+
+  return ()
+         
+
+  
 {----
- Interacting with the MPC Arithmetic BlackBox functionality
 
- It's essential in every MPC protocol that the honest parties agree on which sequence of operations to run. For maximum flexibility, we can allow these to be chosen by the adversary, but allow honest parties to match with them.
-
- `fABB`
-   Keeps track of confidential data namespace.
-   Carries out a specified arithmetic-circuit on the data within the confidential namespace.
-   Discloses only the information specified by explicit "Open" commands.
-
- `fMPC_sansMult`
-   In addition to an underlying confidential data stream, it keeps track of a secret share encoding of each secret value.
-   Each party can also read their polynomial share. Naturally, the adversary receives $t$ shares, but these reveal no information about $x$ (to summarize why F_MPC easily realizes ABB).
-
- `fMPC`
-   The main construction we analyze is the Beaver Multiplication.
-   This shows how to enrich the operation with multiplication. It's an intermediate step between F_MPC and F_ArithmeticBlackBox.
-
-
-In a more realistic model, the sequence of operations would be chosen through a consensus process, like a smart contract. Allow us to provide Availability guarantees.
-
-Defining F_MPC in more detail.
-  The interface should be easily extensible, the way we add MULT should be a good example for how to add others.
+Defining the fMPC hybrid world functionality in more detail.
+  We want to show how our MPC can be extensible, in particular the way we add MULT should be a good example for how to add other similar MPC subroutines.
 
  We know we want to write MPC pseudocode that looks like:
  BeaverMult: [x] [y]
    Preprocessing get [a][b][ab].
-   D= open([x]-[a]) ...
-   return [xy] := [ab]+D ...
+   D = open([x]-[a])
+   E = open([y]-[b])
+   return [xy] := DE + [ab] + D[b] + E[a]
 
-
-The real challenge is that we want to be able to construct simulator proofs as well.
-The simulator proof will need to intercept the Ids.
-  See the real world, with additional variables present, such as the D and E in beaver multiplication. The environment expects to see these from the real world dummy adversary, but the functionality in the ideal world does not have any values for those. So if [x] and [y] correspond to registers $1 and $2, then [xy] in the ideal world would be $3, while in the real world.
-
-Environment asks an honest party to query for one of the ephemeral values, it won't exist...
+ We can make use of encapsulation... the functionality provides fresh handles, which
+   are kept within the subroutine.
+ However, the functionality represents these as integers. Nothing prevents the adversary
+   from requesting information about shares of intermediate values used within the
+   subroutine.
+ Essentially by constraining the type of the environment to be parametric in the handle
+   type, the environment cannot ask honest parties to use handles other than those
+   returned by the interface.
  ---}
 
 mpcBeaver :: MonadMPCProgram m sh => sh -> sh -> m sh
@@ -290,7 +405,6 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
              -- expect one response
              writeChan p2f $ zp
              readChan f2p >>= writeChan p2z
-
    return ()
 
 
@@ -314,83 +428,22 @@ fMPC = fMPC_ True True
 fMPC_sansMult :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fMPC_sansMult = fMPC_ True False
 
-fMPC_ :: MonadMPC_F m => Bool -> Bool -> Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
-fMPC_ hasMPC hasMul (p2f, f2p) (_,_) (_,_) = do
 
-  -- List of operations and results (chosen by Input party)
-  ops    <- newIORef ([] :: [(FmpcOp Sh, FmpcRes Sh)])
-
-  -- Inputs provided by input party
-  inputs <- newIORef []
-
-  -- MPC only
-  -- Maps share IDs to polynomials
-  shareTbl <- newIORef (Map.empty :: Map Sh PolyFq)
-
-  -- Counters viewed by each of the participant parties
-  let initCtrs = [("P:"++show i, 0) | i <- [1.. ?n]]
-  counters <- newIORef $ Map.fromList initCtrs
-
-  -- Generate a fresh handle
-  freshCtr <- newIORef 0
-  let fresh = do
-        x <- readIORef freshCtr
-        modifyIORef freshCtr $ (+) 1
-        return x
-
-  -- Commit this operation and output to the log
-  let commit op outp = do
-        modifyIORef ops $ (++ [(op,outp)])
-        writeChan f2p $ ("InputParty", FmpcF2P_Op outp)
-
-  fork $ forever $ do
-   (pid,m) <- readChan p2f
-   case m of
-    -- Anyone can see the log
-    FmpcP2F_Log -> do
-       log <- readIORef ops
-       writeChan f2p (pid, FmpcF2P_Log log)
-       
-    FmpcP2F_Input x | pid == "InputParty" -> do
-       modifyIORef inputs $ (++ [x])
-       writeChan f2p (pid, FmpcF2P_Ok)
-     
-    -- Operations from MPC parties are in "Follow" mode.
-    -- They have to provide a next op, which is matched up
-    -- against the next one chosen by the input party.
-    -- They receive the output, typically a handle.
-    FmpcP2F_Op op | hasMPC && (not (pid == "InputParty")) -> do
-     ctbl <- readIORef counters
-     let Just c = Map.lookup pid ctbl
-     oplist <- readIORef ops
-     let (op',res) = oplist !! c
-     if op == op' then do
-       modifyIORef counters $ Map.insert pid (c+1)
-       writeChan f2p $ (pid, FmpcF2P_Op res)
-     else do
-       liftIO $ putStrLn $ show oplist
-       liftIO $ putStrLn $ show ctbl
-       liftIO $ putStrLn $ show op
-       liftIO $ putStrLn $ show op'
-       error "follow mode failed" 
-     
-    FmpcP2F_Op op | pid == "InputParty" -> do
-     -- Operations send from the input party get carried out
-     -- immediately and committed to the log of operations.
-     case op of
+doMpcOp :: (MonadMPC_F m) => Bool -> IORef (Map Sh PolyFq) -> m Sh -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
+doMpcOp hasMult shareTbl fresh inputs op = do
+   case op of
        MULT x y -> do
          -- This is a parameter so we can show how to realize it from
          -- the other operations. Generates a random polynomial whose
          -- zero-value coincides with the product of x and y
-         if hasMul then do
+         if hasMult then do
            tbl <- readIORef shareTbl
            let Just xx = Map.lookup x tbl
            let Just yy = Map.lookup y tbl
            xy <- fresh
            phi <- randomWithZero ?t (eval xx 0 * eval yy 0)
            modifyIORef shareTbl $ Map.insert xy phi
-           commit op $ FmpcRes_Sh xy
-
+           return $ FmpcRes_Sh xy
          else error "mult unimplemented"
 
        LIN cs -> do
@@ -403,22 +456,22 @@ fMPC_ hasMPC hasMul (p2f, f2p) (_,_) (_,_) = do
                      let Just xx = Map.lookup x tbl
                      return $ r + (polyFromCoeffs [c]) * xx) zero cs
          modifyIORef shareTbl $ Map.insert k r
-         commit op $ FmpcRes_Sh k
+         return $ FmpcRes_Sh k
 
        OPEN k -> do
          -- The result of opening is included directly in the log
          tbl <- readIORef shareTbl
          let Just phi = Map.lookup k tbl
-         commit op $ FmpcRes_Fq (eval phi 0)
+         return $ FmpcRes_Fq (eval phi 0)
 
-       CONST v | hasMPC-> do
+       CONST v-> do
          -- Create the constant (degree-0) poly
          k <- fresh
          let phi = polyFromCoeffs [v]
          modifyIORef shareTbl $ Map.insert k phi
-         commit op $ FmpcRes_Sh k
+         return $ FmpcRes_Sh k
 
-       RAND | hasMPC -> do
+       RAND -> do
          -- Return a beaver triple
          ka <- fresh; kb <- fresh; kab <- fresh
          a <- randomDegree ?t
@@ -427,27 +480,24 @@ fMPC_ hasMPC hasMul (p2f, f2p) (_,_) (_,_) = do
          modifyIORef shareTbl $ Map.insert ka a
          modifyIORef shareTbl $ Map.insert kb b
          modifyIORef shareTbl $ Map.insert kab ab
-         commit op $ FmpcRes_Trip (ka, kb, kab)
+         return $ FmpcRes_Trip (ka, kb, kab)
 
        INPUT -> do
-         -- Collect input from the input party some other way?
+         -- Collect inputs provied by the input party
          k <- fresh
          inps <- readIORef inputs
          let x:rest = inps
          writeIORef inputs rest
          phi <- randomWithZero ?t x
          modifyIORef shareTbl $ Map.insert k phi
-         commit op $ FmpcRes_Sh k
-
-  return ()
-
+         return $ FmpcRes_Sh k
 
 
 envTestMPC :: MonadEnvironment m =>
-  Environment (FmpcF2P sh) (FmpcP2F sh) a b Void Void String m
+  Environment (FmpcF2P sh) (FmpcP2F sh) (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void) Void Void String m
 envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
    -- Choose the sid and corruptions
-  writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") empty
+  writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") (Map.fromList [("Observer",())])
 
   -- Opened Values
   openTable <- newIORef $ Map.fromList [("P:"++show i, []) | i <- [1.. 3]]
@@ -468,28 +518,34 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     ?pass
 
   fork $ forever $ do
-    m <- readChan a2z
-    liftIO $ putStrLn $ "Z: a sent " -- ++ show m
-    writeChan outp "environment output: 1"
+    mf <- readChan a2z
+    case mf of
+      SttCruptA2Z_P2A (pid, FmpcF2P_Log log) | pid == "Observer" -> do
+           liftIO $ putStrLn $ "Z: Observer receive Log: " ++ show log
+           ?pass
 
-  () <- readChan pump
-  liftIO $ putStrLn "pump"
+  () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 2)
 
-  () <- readChan pump
-  liftIO $ putStrLn "pump"
+  () <- readChan pump; liftIO $ putStrLn "pump"
   _sh <- readIORef lastHandle; let Just x = _sh
   writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 5)
 
-  () <- readChan pump
-  liftIO $ putStrLn "pump"
+  () <- readChan pump; liftIO $ putStrLn "pump"
   _sh <- readIORef lastHandle; let Just y = _sh  
   writeChan z2p ("InputParty", FmpcP2F_Op $ MULT x y)
 
-  () <- readChan pump
-  liftIO $ putStrLn "pump"
+  () <- readChan pump; liftIO $ putStrLn "pump"
   _sh <- readIORef lastHandle; let Just xy = _sh    
   writeChan z2p ("InputParty", FmpcP2F_Op $ OPEN xy)
+
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _sh <- readIORef lastHandle; let Just xy = _sh    
+  writeChan z2p ("InputParty", FmpcP2F_Op $ OPEN xy)
+
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _sh <- readIORef lastHandle; let Just xy = _sh    
+  writeChan z2a $ SttCruptZ2A_A2P ("Observer", FmpcP2F_Log)
 
   () <- readChan pump
   writeChan outp "environment output: 1"
@@ -505,7 +561,7 @@ testMpc2 = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFu
 
 
 -- TODO: We should construct a simulator simBeaver proving that
--- fMPC_sansMult --Beaver--> fMPC
+--   fMPC_sansMult --Beaver--> fMPC
 
-
-
+simBeaver :: MonadAdversary m => Adversary (SttCruptZ2A (FmpcP2F sh) Void) (SttCruptA2Z (FmpcF2P sh) Void) (FmpcF2P Sh) (FmpcP2F Sh) Void Void m
+simBeaver = do undefined
