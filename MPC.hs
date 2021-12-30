@@ -459,7 +459,7 @@ zero = polyFromCoeffs []
 randomWithZero :: MonadITM m => Int -> Fq -> m PolyFq
 randomWithZero t z = do
   -- Random degree t polynomial phi, such that phi(0) = z
-  coeffs <- forM (fromList [1..(t-1)]) (\_ -> randFq)
+  coeffs <- forM (fromList [0..(t-1)]) (\_ -> randFq)
   return $ toPoly $ fromList [z] Data.Vector.++ coeffs
 
 type MonadMPC_F m = (MonadFunctionality m,
@@ -487,6 +487,7 @@ doMpcOp hasMult shareTbl fresh inputs op = do
            let Just yy = Map.lookup y tbl
            xy <- fresh
            phi <- randomWithZero ?t (eval xx 0 * eval yy 0)
+           liftIO $ putStrLn $ "PHI" ++ show phi
            modifyIORef shareTbl $ Map.insert xy phi
            return $ FmpcRes_Sh xy
          else error "mult unimplemented"
@@ -697,7 +698,8 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
            pa <- randomDegree t
            pb <- randomDegree t
            pab <- randomWithZero t (eval pa 0 * eval pb 0)
-           -- TODO: This is a bad simulation! Too many degrees of freedom
+
+           -- TODO: This is an inadequate simulation! Too many degrees of freedom
            modifyIORef shareTable $ Map.insert a pa
            modifyIORef shareTable $ Map.insert b pa
            modifyIORef shareTable $ Map.insert ab pab
@@ -710,6 +712,7 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
            de <- fresh;
            _xy <- freshFrom xy
            tbl <- readIORef r2iTable
+           
            addLog (RAND, FmpcRes_Trip (a, b, ab))
            addLog (LIN [(1,fromJust $ Map.lookup x tbl),(-1,a)], FmpcRes_Sh x_a)
            addLog (OPEN x_a, FmpcRes_Poly dv)
