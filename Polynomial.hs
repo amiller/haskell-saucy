@@ -30,7 +30,7 @@ polyFromCoeffs :: [Fq] -> PolyFq
 polyFromCoeffs = toPoly . fromList 
 
 randomDegree :: MonadITM m => Int -> m PolyFq
-randomDegree t = forM [1..t] (\_ -> randFq) >>= return . toPoly
+randomDegree t = forM [0..t] (\_ -> randFq) >>= return . toPoly
 
 testp :: PolyFq
 testp = toPoly [1,2,3]
