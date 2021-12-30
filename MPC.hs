@@ -1,6 +1,9 @@
 {-# LANGUAGE ImplicitParams, ScopedTypeVariables, Rank2Types,
              ConstraintKinds, PartialTypeSignatures
-  #-} 
+  #-}
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+
+
 
 module MPC where
 
@@ -14,6 +17,8 @@ import Data.Poly
 import Data.Field.Galois (Prime, toP)
 import Data.Vector (Vector,forM,fromList)
 import qualified Data.Vector ((++))
+
+
 
 import ProcessIO
 import StaticCorruptions
@@ -31,9 +36,10 @@ data Void
  This is the "Arithmetic Black Box", or `fABB`.
 
  We have to ensure that all the MPC parties agree on the opcode sequence to run.
- To do this in a flexible way, we let the adversary adaptively choose the
-  opcode sequence, but the sequence becomes common knowledge to the honest
-  parties so they can follow along.
+ To do this in a flexible way, we let the environment (through a designated
+  un-corruptible input party) adaptively choose the opcode sequence, but the
+  sequence becomes common knowledge to all the honest parties as well so they
+  can follow along.
 
  Inputs are similarly provided by the adversary.
 
@@ -49,7 +55,8 @@ data Void
 
 
  Our main functionality `fMPC` keeps track of not just the secret data,
-  but also the entire secret sharing polynomial.
+  but also the entire secret sharing polynomial. Naturally, each of
+ the n parties can fetch their own share (and so in total the adversary can fetch t).
 
  Since our MPC model is designed to demonstrate the compositional style of UC,
   we show off a layered construction MULT, where `fMPC` with MULT present
@@ -67,17 +74,21 @@ mpcCircuitTest = do
   bob <- input
   carol <- input
 
-  ab <- mult alice bob
+  ab  <- mult alice bob
   abc <- mult ab carol
 
-  result <- openShare abc
+  result <- openAbb abc
   return result
 
-
-openShare sh = do
+openAbb sh = do
   mp <- ?op $ OPEN sh
   let FmpcRes_Fq x = mp
   return x
+
+openShare sh = do
+  mp <- ?op $ OPEN sh
+  let FmpcRes_Poly phi = mp
+  return $ eval phi 0
 
 input :: MonadMPCProgram m sh => m sh
 input = do
@@ -95,12 +106,13 @@ data FmpcOp sh = INPUT
                | LIN [(Fq,sh)]
                | CONST Fq
                | MULT sh sh
-               | RAND deriving (Eq, Show)
+               | RAND deriving (Eq, Show, Functor)
 
 data FmpcRes sh = FmpcRes_Ok
                 | FmpcRes_Fq Fq
+                | FmpcRes_Poly PolyFq
                 | FmpcRes_Sh sh
-                | FmpcRes_Trip (sh,sh,sh) deriving Show
+                | FmpcRes_Trip (sh,sh,sh) deriving (Eq, Show, Functor)
 
 type MonadMPCProgram m sh = (MonadIO m,
                              ?op :: FmpcOp sh -> m (FmpcRes sh))
@@ -162,7 +174,7 @@ envTestAbb :: MonadEnvironment m =>
 envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Choose the sid and corruptions
   writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") (Map.fromList [("Observer",())])
-  
+
   fork $ forever $ do
     (pid,x) <- readChan p2z
     case x of
@@ -170,7 +182,12 @@ envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
         -- Append result
         liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Fq " ++ show fq
       TestAbbP2Z_Log log -> do
-        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Log"
+        -- Print the log with the handles sanitized...
+        --  This is a generic, uses `fmap` from "deriving Functor" FmpcOp
+        --  This is necessary to comply with the (forall sh. ...) constraint
+        let sanitized :: [(FmpcOp (), FmpcRes ())] =
+                 [(fmap (const ()) op, fmap (const ()) res) | (op,res) <- log]
+        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Log " ++ show sanitized
     ?pass
 
   -- Listen to log from dummy adversary
@@ -178,6 +195,7 @@ envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
     mf <- readChan a2z
     case mf of
       SttCruptA2Z_P2A (pid, FmpcF2P_Log log) | pid == "Observer" -> do
+           -- Log received by a corrupt party (we can print the log)
            liftIO $ putStrLn $ "Z: Observer receive Log: " ++ show log
            ?pass
 
@@ -186,6 +204,9 @@ envTestAbb z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2P ("Observer", FmpcP2F_Log)
+
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2p $ ("ObserverHon", TestAbbZ2P_Log)
 
   () <- readChan pump
   writeChan outp "environment output: 1"
@@ -201,12 +222,13 @@ testMpc0 = runITMinIO 120 $ execUC envTestAbb (runAbbTestProg mpcCircuitTest) (f
 data FmpcP2F sh = FmpcP2F_Op (FmpcOp sh)
                 | FmpcP2F_Log
                 | FmpcP2F_Input Fq
-                | FmpcP2F_MyShare sh
+                | FmpcP2F_MyShare sh deriving (Show, Functor)
 
 data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
                 | FmpcF2P_Log [(FmpcOp sh,FmpcRes sh)]
                 | FmpcF2P_Ok
-                | FmpcF2P_MyShare Fq
+                | FmpcF2P_WrongFollow
+                | FmpcF2P_MyShare Fq deriving (Show, Functor)
 
 doAbbOp :: (MonadIO m) => IORef (Map Sh Fq) -> m Sh -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
 doAbbOp secretTable fresh inputs op = do
@@ -314,11 +336,14 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
      if op == op' then do
        modifyIORef counters $ Map.insert pid (c+1)
        writeChan f2p $ (pid, FmpcF2P_Op res)
-     else error "follow mode failed"
+     else
+       writeChan f2p $ (pid, FmpcF2P_WrongFollow)
 
     FmpcP2F_MyShare sh | hasMPC -> do
      -- Parse from pid
-     i <- return 1
+     let i = case pid of "P:1" -> 1
+                         "P:2" -> 2
+                         _ -> error "MyShare called by someone else"
      tbl <- readIORef shareTbl
      let Just phi = Map.lookup sh tbl
      let x = eval phi i
@@ -391,7 +416,12 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
          res <- readChan f2p
          let (FmpcF2P_Op r) = res
          return r
-  
+
+   log <- newIORef []
+   let commit opcode res = do
+       modifyIORef log $ (++ [(opcode,res)])
+       writeChan p2z $ FmpcF2P_Op res
+
    fork $ forever $ do
         zp <- readChan z2p
         case zp of
@@ -399,12 +429,27 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
              -- Intercept the "MULT" operations and replace them with
              -- a call to the MPC program
              xy <- let ?op = _op in mulProg x y
-             writeChan p2z $ FmpcF2P_Op (FmpcRes_Sh xy)
-          _ -> do
+             commit (MULT x y) (FmpcRes_Sh xy)
+             
+          FmpcP2F_Op op -> do
              -- Everything else, we can simply forward along and 
              -- expect one response
              writeChan p2f $ zp
+             mr <- readChan f2p
+             let FmpcF2P_Op r = mr
+             commit op r
+
+          FmpcP2F_Log -> do
+             -- When exposing the log, we want to present our local log
+             -- (e.g., including the MULT) instead of the one from fMPC
+             l <- readIORef log
+             writeChan p2z $ FmpcF2P_Log l
+
+          FmpcP2F_MyShare sh -> do
+             -- Forward request for Shares in-tact
+             writeChan p2f zp
              readChan f2p >>= writeChan p2z
+          
    return ()
 
 
@@ -462,7 +507,7 @@ doMpcOp hasMult shareTbl fresh inputs op = do
          -- The result of opening is included directly in the log
          tbl <- readIORef shareTbl
          let Just phi = Map.lookup k tbl
-         return $ FmpcRes_Fq (eval phi 0)
+         return $ FmpcRes_Poly phi
 
        CONST v-> do
          -- Create the constant (degree-0) poly
@@ -494,59 +539,101 @@ doMpcOp hasMult shareTbl fresh inputs op = do
 
 
 envTestMPC :: MonadEnvironment m =>
-  Environment (FmpcF2P sh) (FmpcP2F sh) (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void) Void Void String m
+  Environment              (FmpcF2P sh)                    (FmpcP2F sh)
+              (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void)
+              Void Void String m
 envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
    -- Choose the sid and corruptions
-  writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") (Map.fromList [("Observer",())])
+  writeChan z2exec $ SttCrupt_SidCrupt ("mpc","") (Map.fromList [("Observer",()),("P:1",())])
 
   -- Opened Values
   openTable <- newIORef $ Map.fromList [("P:"++show i, []) | i <- [1.. 3]]
   lastHandle <- newIORef Nothing
-  
+  lastIntHandle <- newIORef Nothing
+
+  let sendInput ipp2f = do
+        writeChan z2p $ ("InputParty", ipp2f)
+   
   fork $ forever $ do
-    (pid,x) <- readChan p2z
-    case x of
-      FmpcF2P_Op (FmpcRes_Fq r) -> do
-        -- Append openings
-        modifyIORef openTable $ Map.insertWith (++) pid [r]
-        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Fq " ++ show r
-      FmpcF2P_Op (FmpcRes_Sh sh) -> do
-        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent Sh"
-        writeIORef lastHandle $ Just sh
-      _ -> do
-        liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent something"
+    (pid,m) <- readChan p2z
+    -- Store the opaque handles received from honest parties
+    case m of FmpcF2P_Op (FmpcRes_Sh sh) -> writeIORef lastHandle (Just sh)
+              _ -> return ()
+    let sanitized = fmap (const ()) m
+    liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent " ++ show sanitized
     ?pass
 
   fork $ forever $ do
     mf <- readChan a2z
     case mf of
-      SttCruptA2Z_P2A (pid, FmpcF2P_Log log) | pid == "Observer" -> do
-           liftIO $ putStrLn $ "Z: Observer receive Log: " ++ show log
-           ?pass
+      SttCruptA2Z_P2A (pid, m) -> do
+        -- Store the concrete handles received from corrupt party
+        case m of
+          FmpcF2P_Op (FmpcRes_Sh sh) -> writeIORef lastIntHandle (Just sh)
+          FmpcF2P_Log log | pid == "Observer" -> do
+            liftIO $ putStrLn $ "Z: [" ++pid++ "] (corrupt) received log: "
+            forM (fromList log) $ liftIO . putStrLn . show
 
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 2)
+            -- Check the equation is satisfied
+            
+            
+            return ()
+          _ -> do
+            liftIO $ putStrLn $ "Z: [" ++pid++ "] (corrupt) received: " ++ show m
+        ?pass
 
+  -- Send inputs through honest InputParty
   () <- readChan pump; liftIO $ putStrLn "pump"
-  _sh <- readIORef lastHandle; let Just x = _sh
-  writeChan z2p ("InputParty", FmpcP2F_Op $ CONST 5)
+  sendInput $ (FmpcP2F_Op $ CONST 2)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _x <- readIORef lastHandle; let Just x = _x
+  sendInput $ (FmpcP2F_Op $ CONST 5)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _y <- readIORef lastHandle; let Just y = _y
+  sendInput $ (FmpcP2F_Op $ MULT x y)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _xy <- readIORef lastHandle; let Just xy = _xy
+  sendInput $ (FmpcP2F_Op $ OPEN xy)
 
+  -- Follow from honest party
   () <- readChan pump; liftIO $ putStrLn "pump"
-  _sh <- readIORef lastHandle; let Just y = _sh  
-  writeChan z2p ("InputParty", FmpcP2F_Op $ MULT x y)
-
+  writeChan z2p $ ("P:2", FmpcP2F_Op $ CONST 2)
   () <- readChan pump; liftIO $ putStrLn "pump"
-  _sh <- readIORef lastHandle; let Just xy = _sh    
-  writeChan z2p ("InputParty", FmpcP2F_Op $ OPEN xy)
-
+  _x <- readIORef lastHandle; let Just x = _x
+  writeChan z2p $ ("P:2", FmpcP2F_Op $ CONST 5)
   () <- readChan pump; liftIO $ putStrLn "pump"
-  _sh <- readIORef lastHandle; let Just xy = _sh    
-  writeChan z2p ("InputParty", FmpcP2F_Op $ OPEN xy)
-
+  _y <- readIORef lastHandle; let Just y = _y
+  writeChan z2p $ ("P:2", FmpcP2F_Op $ MULT x y)
   () <- readChan pump; liftIO $ putStrLn "pump"
-  _sh <- readIORef lastHandle; let Just xy = _sh    
+  _xy <- readIORef lastHandle; let Just xy = _xy
+  writeChan z2p $ ("P:2", FmpcP2F_MyShare xy)
+  
+  -- Logs from Observer (a corrupt party)
+  () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2P ("Observer", FmpcP2F_Log)
 
+  -- My Share from one of the corrupt parties
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2P ("P:1", FmpcP2F_MyShare 8)
+
+  -- Follow along (from a corrupt party)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2P ("P:1", FmpcP2F_Op $ CONST 2)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  _x <- readIORef lastIntHandle; let Just x = _x  
+  writeChan z2a $ SttCruptZ2A_A2P ("P:1", FmpcP2F_Op $ CONST 5)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  -- Given the dummy adversary in the Ideal world, this matches
+  _y <- readIORef lastIntHandle; let Just y = _y  
+  writeChan z2a $ SttCruptZ2A_A2P ("P:1", FmpcP2F_Op $ MULT x y)
+  -- Given the dummy adversary in the Real world, this matches
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2P ("P:1", FmpcP2F_Op $ RAND)
+
+  -- Logs from an honest party
+  () <- readChan pump; liftIO $ putStrLn "pump"  
+  sendInput $ FmpcP2F_Log
+  
   () <- readChan pump
   writeChan outp "environment output: 1"
 
@@ -555,13 +642,169 @@ runMPCFunc :: MonadFunctionality m => Int -> Int ->
      Functionality a b c d e f m
 runMPCFunc n t f = let ?n = n; ?t = t in f
 
-testMpc1 = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3 1 $ fMPC) dummyAdversary
+testMpc1Ideal = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3 1 $ fMPC) dummyAdversary
 
-testMpc2 = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFunc 3 1 $ fMPC_sansMult) dummyAdversary
+testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFunc 3 1 $ fMPC_sansMult) dummyAdversary
 
-
--- TODO: We should construct a simulator simBeaver proving that
+-- We should construct a simulator simBeaver proving that
 --   fMPC_sansMult --Beaver--> fMPC
 
-simBeaver :: MonadAdversary m => Adversary (SttCruptZ2A (FmpcP2F sh) Void) (SttCruptA2Z (FmpcF2P sh) Void) (FmpcF2P Sh) (FmpcP2F Sh) Void Void m
-simBeaver = do undefined
+simBeaver :: (Ord sh, MonadAdversary m) => Adversary (SttCruptZ2A (FmpcP2F Sh) Void) (SttCruptA2Z (FmpcF2P Sh) Void) (FmpcF2P sh) (FmpcP2F sh) Void Void m
+simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
+  let n = 3; t=1
+  let fromJust (Just m) = m
+      fromJust Nothing = -1
+
+  -- Simulate the real world fMPC the corrupt parties would interact with
+  let initCtrs = [("P:"++show i, 0) | i <- [1.. n]]
+  counters <- newIORef $ Map.fromList initCtrs
+
+  -- Store the shares other than the pass-through ones
+  shareTable <- newIORef (Map.empty :: Map Sh PolyFq)
+
+  -- Mapping from sh the fMPC in the ideal world to
+  -- Sh in the environment's real interaction with Sim.
+  r2iTable <- newIORef (Map.empty :: Map sh Sh)
+  i2rTable <- newIORef (Map.empty :: Map Sh sh)
+  let update sh sSh = do
+        modifyIORef i2rTable $ Map.insert sSh sh
+        modifyIORef r2iTable $ Map.insert sh sSh
+
+  -- Generate a fresh handle
+  freshCtr <- newIORef 0
+  let fresh = do
+        x <- readIORef freshCtr
+        modifyIORef freshCtr $ (+) 1
+        return x
+
+  let freshFrom sh = do
+        x <- fresh
+        update sh x
+        return x
+  
+  -- Whenever we fetch the logs from the ideal world,
+  -- if MULT shows up in the log, then we need to substitute it over
+  a2zlog <- newIORef []
+  let addLog (op, res) = modifyIORef a2zlog $ (++ [(op,res)])
+  let commit opres = do
+      let (op, res) = opres
+      -- liftIO $ putStrLn $ "Commit" ++ show (fmap (const ()) op, fmap (const ()) res)
+      case opres of
+        (MULT x y, FmpcRes_Sh xy) -> do
+           -- liftIO $ putStrLn $ "Mult was called"
+           -- Add ops for beaver
+           a <- fresh; b <- fresh; ab <- fresh
+           pa <- randomDegree t
+           pb <- randomDegree t
+           pab <- randomWithZero t (eval pa 0 * eval pb 0)
+           -- TODO: This is a bad simulation! Too many degrees of freedom
+           modifyIORef shareTable $ Map.insert a pa
+           modifyIORef shareTable $ Map.insert b pa
+           modifyIORef shareTable $ Map.insert ab pab
+
+           -- TODO: need to look up our shares for x, y
+           --  dv(1) should match x-a, etc.
+           x_a <- fresh; y_b <- fresh
+           dv <- randomDegree t
+           ev <- randomDegree t
+           de <- fresh;
+           _xy <- freshFrom xy
+           tbl <- readIORef r2iTable
+           addLog (RAND, FmpcRes_Trip (a, b, ab))
+           addLog (LIN [(1,fromJust $ Map.lookup x tbl),(-1,a)], FmpcRes_Sh x_a)
+           addLog (OPEN x_a, FmpcRes_Poly dv)
+           addLog (LIN [(1,fromJust $ Map.lookup y tbl),(-1,b)], FmpcRes_Sh y_b)
+           addLog (OPEN y_b, FmpcRes_Poly ev)
+           addLog (CONST (eval dv 0 * eval ev 0), FmpcRes_Sh de)
+           addLog (LIN [(1,de),(1,ab),(eval dv 0,b),(eval ev 0,a)], FmpcRes_Sh _xy) --}
+           return ()
+
+        (op, FmpcRes_Sh xy) -> do
+           freshFrom xy
+           tbl <- readIORef r2iTable
+           addLog (fmap (fromJust . flip Map.lookup tbl) op,
+                   fmap (fromJust . flip Map.lookup tbl) res)
+           return ()
+
+        (op, FmpcRes_Trip (a, b, ab)) -> do
+           freshFrom a; freshFrom b; freshFrom ab
+           tbl <- readIORef r2iTable
+           addLog (fmap (fromJust . flip Map.lookup tbl) op,
+                   fmap (fromJust . flip Map.lookup tbl) res)
+           return ()
+        (op,res) -> do
+           tbl <- readIORef r2iTable
+           addLog (fmap (fromJust . flip Map.lookup tbl) op,
+                   fmap (fromJust . flip Map.lookup tbl) res)
+           return ()
+      return ()
+
+  -- Only commit the newest logs
+  logCtr <- newIORef 0
+  
+  let syncLog pid = do
+      -- Fetch the current log
+      writeChan a2p $ (pid, FmpcP2F_Log)
+      mf <- readChan p2a
+      let (pid, FmpcF2P_Log log) = mf
+      -- liftIO $ putStrLn $ "simBeaver: Received log" ++ show (fmap (const ()) mf)
+      -- Commit just the new entries
+      t <- readIORef logCtr
+      let tail = drop t log
+      modifyIORef logCtr (+ length tail)
+      forM (fromList tail) $ commit
+
+  let myShare pid sh = do
+      -- let fSans m = Map.lookup tbl sh
+      -- Fetch from the Ideal functionality if allowed, else local
+      writeChan a2p $ (pid, FmpcP2F_MyShare sh)
+
+  fork $ forever $ do
+    mf <- readChan z2a
+    let SttCruptZ2A_A2P (pid, m) = mf
+    -- liftIO $ putStrLn $ "sim: z2a a2p s " ++ show (fmap (const ()) m)
+    case m of
+      FmpcP2F_Log -> do
+        syncLog pid
+        log <- readIORef a2zlog
+        writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_Log log)
+        return ()
+        
+      FmpcP2F_Op op -> do
+        -- In real would match with log
+        syncLog pid
+        ctbl <- readIORef counters
+        let Just c = Map.lookup pid ctbl
+        oplist <- readIORef a2zlog
+        let (op',res) = oplist !! c
+        if op == op' then do
+          modifyIORef counters $ Map.insert pid (c+1)
+          writeChan a2z $ SttCruptA2Z_P2A $ (pid, FmpcF2P_Op res)
+        else
+          writeChan a2z $ SttCruptA2Z_P2A $ (pid, FmpcF2P_WrongFollow)
+
+      FmpcP2F_MyShare sh -> do
+        -- Retrieve the simulated share using our mapping
+        let i = case pid of "P:1" -> 1
+                            "P:2" -> 2
+                            _ -> error "MyShare called by someone else"
+
+        tbl <- readIORef i2rTable
+        case Map.lookup sh tbl of
+         Just s -> do
+           writeChan a2p (pid, FmpcP2F_MyShare s)
+           mf <- readChan p2a
+           let (pid, FmpcF2P_MyShare x) = mf
+           -- liftIO $ putStrLn $ "My Share IDEAL: " ++ show x
+           writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_MyShare x)
+         Nothing -> do
+           ptbl <- readIORef shareTable
+           let Just phi = Map.lookup sh ptbl
+           writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_MyShare (eval phi i))
+        
+      FmpcP2F_Input _ -> do
+        error "Not considering corrupt input party"
+
+  return ()
+
+testMpc2Ideal = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3 1 $ fMPC) simBeaver
