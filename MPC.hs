@@ -16,7 +16,6 @@ import Control.Monad (forever,foldM)
 import Data.Poly
 import Data.Field.Galois (Prime, toP)
 import Data.Vector (Vector,forM,fromList)
-import qualified Data.Vector ((++))
 
 
 
@@ -235,10 +234,9 @@ doAbbOp secretTable fresh inputs op = do
      case op of
        MULT x y -> do
          -- Create a new entry by multiplying two existing ones
-         tbl <- readIORef secretTable
-         let Just xx = Map.lookup x tbl
-         let Just yy = Map.lookup y tbl
-         xy <- storeFresh (xx*yy)
+         x <- readSecret x
+         y <- readSecret y
+         xy <- storeFresh (x*y)
          return $ FmpcRes_Sh xy
 
        LIN cs -> do
@@ -460,19 +458,9 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
    return ()
 
 
-zero :: PolyFq
-zero = polyFromCoeffs []
-
-randomWithZero :: MonadITM m => Int -> Fq -> m PolyFq
-randomWithZero t z = do
-  -- Random degree t polynomial phi, such that phi(0) = z
-  coeffs <- forM (fromList [0..(t-1)]) (\_ -> randFq)
-  return $ toPoly $ fromList [z] Data.Vector.++ coeffs
-
 type MonadMPC_F m = (MonadFunctionality m,
                      ?n :: Int,
                      ?t :: Int)
-
 
 fMPC :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fMPC = fMPC_ True True
@@ -489,13 +477,11 @@ doMpcOp hasMult shareTbl fresh inputs op = do
          -- the other operations. Generates a random polynomial whose
          -- zero-value coincides with the product of x and y
          if hasMult then do
-           tbl <- readIORef shareTbl
-           let Just xx = Map.lookup x tbl
-           let Just yy = Map.lookup y tbl
-           xy <- fresh
-           phi <- randomWithZero ?t (eval xx 0 * eval yy 0)
+           xphi <- readSharing x
+           yphi <- readSharing y
+           phi <- randomWithZero ?t (eval xphi 0 * eval yphi 0)
            liftIO $ putStrLn $ "PHI" ++ show phi
-           modifyIORef shareTbl $ Map.insert xy phi
+           xy <- storeFresh phi
            return $ FmpcRes_Sh xy
          else error "mult unimplemented"
 
@@ -505,7 +491,7 @@ doMpcOp hasMult shareTbl fresh inputs op = do
          -- polys from the table
          r <- foldM (\r -> \(c::Fq,sh::Sh) ->  do
                      x <- readSharing sh
-                     return $ r + (polyFromCoeffs [c]) * x) zero cs
+                     return $ r + (polyFromCoeffs [c]) * x) polyZero cs
          k <- storeFresh r
          return $ FmpcRes_Sh k
 

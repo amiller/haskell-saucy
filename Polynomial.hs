@@ -9,6 +9,7 @@ module Polynomial where
 import Data.List (tails)
 import Data.Poly
 import Data.Vector (forM,fromList)
+import qualified Data.Vector ((++))
 import Data.Field.Galois (Prime, toP)
 import ProcessIO
 import System.Random
@@ -27,7 +28,17 @@ randFq = getNbits 120 >>= return . toP
 
 -- Build poly from coefficients
 polyFromCoeffs :: [Fq] -> PolyFq
-polyFromCoeffs = toPoly . fromList 
+polyFromCoeffs = toPoly . fromList
+
+polyZero :: PolyFq
+polyZero = polyFromCoeffs []
+
+randomWithZero :: MonadITM m => Int -> Fq -> m PolyFq
+randomWithZero t z = do
+  -- Random degree t polynomial phi, such that phi(0) = z
+  coeffs <- forM (fromList [0..(t-1)]) (\_ -> randFq)
+  return $ toPoly $ fromList [z] Data.Vector.++ coeffs
+
 
 randomDegree :: MonadITM m => Int -> m PolyFq
 randomDegree t = forM [0..t] (\_ -> randFq) >>= return . toPoly
