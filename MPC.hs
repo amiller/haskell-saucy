@@ -238,35 +238,39 @@ doAbbOp secretTable fresh inputs op = do
          tbl <- readIORef secretTable
          let Just xx = Map.lookup x tbl
          let Just yy = Map.lookup y tbl
-         xy <- fresh
-         modifyIORef secretTable $ Map.insert xy (xx*yy)
+         xy <- storeFresh (xx*yy)
          return $ FmpcRes_Sh xy
 
        LIN cs -> do
          -- Create a new entry from a linear combination of existing ones
-         k <- fresh
-         r <- foldM (\r -> \(c::Fq,x::Sh) -> do
-            tbl <- readIORef secretTable
-            let Just xx = Map.lookup x tbl
-            return $ r + c * xx) 0 cs
-         modifyIORef secretTable $ Map.insert k r
+         r <- foldM (\r -> \(c::Fq,sh::Sh) -> do
+            x <- readSecret sh
+            return $ r + c * x) 0 cs
+         k <- storeFresh r
          return $ FmpcRes_Sh k
 
-       OPEN k -> do
+       OPEN sh -> do
          -- Publish this value in the log
-         tbl <- readIORef secretTable
-         let Just x = Map.lookup k tbl
+         x <- readSecret sh
          return $ FmpcRes_Fq x
 
        INPUT -> do
-         -- Collect inputs provided by the input party
-         k <- fresh
+         -- Collect next input provided by the input party
          inps <- readIORef inputs
          let x:rest = inps
          writeIORef inputs rest
-         modifyIORef secretTable $ Map.insert k x
+         k <- storeFresh x
          return $ FmpcRes_Sh k
-  
+
+     where
+       storeFresh x = do
+           sh <- fresh
+           modifyIORef secretTable $ Map.insert sh x
+           return sh
+       readSecret sh = do
+           tbl <- readIORef secretTable
+           let Just x = Map.lookup sh tbl
+           return x
 
 fMPC_ :: MonadMPC_F m => Bool -> Bool -> Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
@@ -345,10 +349,13 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
                          "P:2" -> 2
                          _ -> error "MyShare called by someone else"
      tbl <- readIORef shareTbl
-     let Just phi = Map.lookup sh tbl
-     let x = eval phi i
-     writeChan f2p $ (pid, FmpcF2P_MyShare x)
-
+     let mf = Map.lookup sh tbl
+     case mf of
+        Just phi -> do
+           let x = eval phi i
+           writeChan f2p $ (pid, FmpcF2P_MyShare x)
+        Nothing -> do
+           writeChan f2p $ (pid, FmpcF2P_WrongFollow)
     _ -> do
      error "unmatched operation"
 
@@ -496,47 +503,52 @@ doMpcOp hasMult shareTbl fresh inputs op = do
          -- Construct a new secret sharing polynomial simply by
          -- scaling and summing the linear combination of existing
          -- polys from the table
-         k <- fresh
-         r <- foldM (\r -> \(c::Fq,x::Sh) ->  do
-                     tbl <- readIORef shareTbl
-                     let Just xx = Map.lookup x tbl
-                     return $ r + (polyFromCoeffs [c]) * xx) zero cs
-         modifyIORef shareTbl $ Map.insert k r
+         r <- foldM (\r -> \(c::Fq,sh::Sh) ->  do
+                     x <- readSharing sh
+                     return $ r + (polyFromCoeffs [c]) * x) zero cs
+         k <- storeFresh r
          return $ FmpcRes_Sh k
 
        OPEN k -> do
          -- The result of opening is included directly in the log
-         tbl <- readIORef shareTbl
-         let Just phi = Map.lookup k tbl
+         phi <- readSharing k
          return $ FmpcRes_Poly phi
 
        CONST v-> do
          -- Create the constant (degree-0) poly
-         k <- fresh
          let phi = polyFromCoeffs [v]
-         modifyIORef shareTbl $ Map.insert k phi
+         k <- storeFresh phi
          return $ FmpcRes_Sh k
 
        RAND -> do
          -- Return a beaver triple
-         ka <- fresh; kb <- fresh; kab <- fresh
          a <- randomDegree ?t
          b <- randomDegree ?t
          ab <- randomWithZero ?t (eval a 0 * eval b 0)
-         modifyIORef shareTbl $ Map.insert ka a
-         modifyIORef shareTbl $ Map.insert kb b
-         modifyIORef shareTbl $ Map.insert kab ab
+         ka <- storeFresh a
+         kb <- storeFresh b
+         kab <- storeFresh ab
          return $ FmpcRes_Trip (ka, kb, kab)
 
        INPUT -> do
          -- Collect inputs provied by the input party
-         k <- fresh
          inps <- readIORef inputs
          let x:rest = inps
          writeIORef inputs rest
          phi <- randomWithZero ?t x
-         modifyIORef shareTbl $ Map.insert k phi
+         k <- storeFresh phi
          return $ FmpcRes_Sh k
+
+   where
+       storeFresh x = do
+           sh <- fresh
+           modifyIORef shareTbl $ Map.insert sh x
+           return sh
+       readSharing sh = do
+           tbl <- readIORef shareTbl
+           let Just x = Map.lookup sh tbl
+           return x
+
 
 
 envTestMPC :: MonadEnvironment m =>
