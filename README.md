@@ -58,16 +58,22 @@ SaUCy is a research program that aims to use Universal Composability as the basi
    Theorem: Joint State composition
             !F -> !!F
 
-5. Async.hs
+5. Authenticated Map.
+   Optionally leak.
+   (still TODO)
+   
+   fColRes -> fAuthMap 
+
+6. Async.hs
    Composition operator: runAsyncF
    Composition operator: bangFAsync
 
-6. Multicast.hs
+7. Multicast.hs
    Functionality: fMulticast
    Protocol: protMulticast
    Theorem: Multicast is realizable in the !Auth model
       !fAuth -> fMulticast
 
-7. ACast.hs
+8. ACast.hs
 
    Theorem: Bracha's protocol realizes fBroadcast
