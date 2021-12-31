@@ -102,7 +102,7 @@ runEnvironment passer sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) z = do
   outp <- newChan
   let ?pass = writeChan passer ()
   fork $ z sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp
-  c <- multiplex passer outp
+  c <- twoplex passer outp
   let _run = do
         writeChan pump ()
         o <- readChan c

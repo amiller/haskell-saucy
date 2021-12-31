@@ -84,19 +84,22 @@ wrapRead f c = do
   fork $ forever $ readChan c >>= writeChan d . f 
   return d
 
-multiplex :: HasFork m => Chan a -> Chan b -> m (Chan (Either a b))
-multiplex a b = do
+twoplex :: HasFork m => Chan a -> Chan b -> m (Chan (Either a b))
+twoplex a b = do
   c <- newChan
   fork $ forever $ readChan a >>= writeChan c . Left
   fork $ forever $ readChan b >>= writeChan c . Right
   return c
 
-demultiplex :: HasFork m => Chan (Either a b) -> Chan a -> Chan b -> m ()
-demultiplex ab a b = forever $ do
-                       x <- readChan ab
-                       case x of
-                         Left  y -> writeChan a y
-                         Right y -> writeChan b y
+detwoplex :: HasFork m => Chan (Either a b) -> m (Chan a, Chan b)
+detwoplex ab = forever $ do
+  a <- newChan
+  b <- newChan
+  x <- readChan ab
+  case x of
+    Left  y -> writeChan a y
+    Right y -> writeChan b y
+  return (a,b)
 
 
 {- Syntax sugar for parallel composition, returning the right value -}
@@ -105,7 +108,7 @@ p |. q = fork p >> q
 infixl 1 |.
 
 
-{- Example of Implicit parameters and Monad -}
+{- Example of Implicit parameters and custom Monad constraints -}
 example_usesImplicitInt :: (Monad m, (?getMyIntParam :: m Int)) => m String
 example_usesImplicitInt = do
    n <- ?getMyIntParam;
@@ -230,7 +233,7 @@ flipWrite a b = do
   else      writeChan b ()
 
 counter a b = do
-  ab <- multiplex a b
+  ab <- twoplex a b
   let counter' n = do
                 c <- readChan ab
                 case c of 
@@ -315,8 +318,9 @@ runOpposed :: (MonadITM m => (Chan q2p, Chan p2q) -> m ()) ->
 runOpposed p q = do
    q2p <- newChan
    p2q <- newChan
-   fork $ p (q2p, p2q)
    fork $ q (p2q, q2p)
+   p (q2p, p2q)
+   -- Return when p is finished
    return ()
 
 {--
@@ -360,7 +364,7 @@ myProgramB (fromOpp, toOpp) = do
   return ()
 
 testOppA = runITMinIO 120 $ runOpposed myProgramA qEcho
-testOppB = runITMinIO 120 $ runOpposed myProgramB (runMux2 qUnit qUnit)
+testOppB = runITMinIO 120 $ runOpposed myProgramB (runMux2 qUnit qEcho)
 
 {--
  The unbounded multiplexer:

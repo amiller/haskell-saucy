@@ -1,4 +1,5 @@
- {-# LANGUAGE ImplicitParams, Rank2Types, ScopedTypeVariables
+ {-# LANGUAGE ImplicitParams, Rank2Types, ScopedTypeVariables,
+    PartialTypeSignatures
   #-} 
 
 {- 
@@ -26,23 +27,43 @@ instance Show Void where
   show = undefined
 
 
-
 {- Multi-session extensions -}
 
-{-
+{- 
  Given a functionality F, the multisession extension, !F, 
  allows access to an arbitrary number of subinstances of F.
  Each subinstance of F is passed a distinct SID string.
 
  A composition theorem states that given a protocol pi realizing F,
  !pi realizes !F (for the obvious natural definition of multisession 
- protocols !pi)
+ protocols !pi).
+      F -> G
+    ----------
+     !F -> !G
 
  Another composition theorem (JUC), states
    F -> !G    G -> H
   ------------------ (juc theorem)
         F -> !H
+
+  Part I. We'll give the definition of the multiession operator, for
+     functionalities as well as protocols
+
+  Part II. We'll work through the JUC composition theorem. This is a
+     perfect simulation, with no cryptographic content per se, but mostly
+     involves handling the ssids.
+
+  Part III. Finally we'll complete our proof of the UC composition theorem.
+     This involves constructing a simulator adaptor, !s, which is natural.
+     The reduction proof requires us to take an environment Z that attacks
+     !F -> !G, and show we can construct an environment Z' that attacks
+     the underlying F -> G.
+     This reduction involves a familiar cryptographic hybrid games argument,
+     where we use an index parameter i and present Z with one challenge
+     instance at a time.
  -}
+
+{-- Part I. Defining Multisession extensions !F and !P --}
 
 bangF
   :: MonadFunctionality m =>
@@ -57,17 +78,17 @@ bangF f (p2f, f2p) (a2f, f2a) _ = do
   let newSsid ssid = do
         liftIO $ putStrLn $ "[" ++ show ?sid ++ "] Creating new subinstance with ssid: " ++ show ssid
         let newSsid' _2ssid f2_ tag = do
-                     ff2_ <- newChan;
-                     _2ff <- newChan;
-                     fork $ forever $ do
-                                  m <- readChan ff2_
-                                  --liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag -- ++ " " ++ show m
-                                  writeChan f2_ (ssid, m)
-                     modifyIORef _2ssid $ insert ssid _2ff
-                     return (_2ff, ff2_)
+              ff2_ <- newChan;
+              _2ff <- newChan;
+              fork $ forever $ do
+                m <- readChan ff2_
+                --liftIO $ putStrLn $ "!F wrapper f->_ received " ++ tag -- ++ " " ++ show m
+                writeChan f2_ (ssid, m)
+              modifyIORef _2ssid $ insert ssid _2ff
+              return (_2ff, ff2_)
         f2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) f2p
         p <- newSsid' p2ssid f2p' "f2p"
-        a <- newSsid' a2ssid f2a "f2a"
+        a <- newSsid' a2ssid f2a  "f2a"
         fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in do
           liftIO $ putStrLn $ "in forked instance: " ++ show ?sid
           f p a (undefined, undefined)
@@ -93,7 +114,8 @@ bangF f (p2f, f2p) (a2f, f2a) _ = do
   return ()
 
 
---
+-- The !P operator for protocols is nearly the same. The differences
+-- mainly have to do with (PID,_) not requiring a special case.
 bangP p (z2p, p2z) (f2p, p2f) = do
   -- Store a table that maps each SSID to a channel (z2p,f2p) used
   -- to communicate with each subinstance of !p
@@ -136,12 +158,6 @@ bangP p (z2p, p2z) (f2p, p2f) = do
   return ()
 
 
--- Theorem statement:
---    (pi,f) ~ (phi,g) --> (!pi,!f) ~ (!phi,!g)
---
--- squashS below is a simulator for this statement
-
-
 {- Test cases for multisession -}
 
 testEnvMulti z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
@@ -175,9 +191,18 @@ testExecMulti :: IO String
 testExecMulti = runITMinIO 120 $ execUC testEnvMulti (bangP idealProtocol) (bangF dummyFunctionality) dummyAdversary
 
 
-{- Squash Theorem -}
-{- !F -> !!F -}
-{- (squash,!F) ~ (idealP,!!F) -}
+
+{-- Part II. Squash Theorem (JUC) --}
+{- Here we prove the following theorem:
+        !F -> !!F
+   In other words, a single bang !F is powerful enough,
+   that additional bangs !!F doesn't add any new capability.
+
+   In more detail, we give a protocol `squash` that turns !! into !.
+      (squash,!F) ~ (idealP,!!F)
+
+   This construction is a perfect simulation, it has no cryptographic content per se.
+-}
 
 squash (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
@@ -260,3 +285,83 @@ testExecSquashIdeal' = runITMinIO 120 $ execUC testEnvSquash (bangP (idealProtoc
 
 testExecSquashIdeal'' :: IO String 
 testExecSquashIdeal'' = runITMinIO 120 $ execUC testEnvSquash (bangP (bangP idealProtocol)) (bangF (bangF dummyFunctionality)) squashS
+
+
+
+{-- Part III. Universal Composition Theorem --}
+
+-- Theorem statement:
+--    (pi,f) ~ (phi,g) --> (!pi,!f) ~ (!phi,!g)
+--
+-- The simulator for this theorem, bangS, is very straightforward.
+--
+-- The interesting step comes in the proof by reduction. Essentially
+--   we need to show that an environment that can distinguish
+--   !phi from !pi can also be leveraged to distinguish a single
+--   instance of phi from pi.
+
+bangS :: (MonadAdversary m =>
+            Adversary      z2a       a2z       p2a       a2p  Void Void m) ->
+            Adversary (SID,z2a) (SID,a2z) (SID,p2a) (SID,a2p) Void Void m
+bangS s (z2a, a2z) (p2a, a2p) (_, _) = do
+  -- Store a table that maps each SSID to a channel (z2s,p2s) used
+  -- to communicate with each subinstance of !s
+  z2ssid <- newIORef empty
+  p2ssid <- newIORef empty
+
+  let newSsid ssid = do
+        -- liftIO $ putStrLn $ "[" ++ show ?sid ++ "] Creating new simulator subinstance with ssid: " ++ show ssid
+        let newSsid' _2ssid a2_ tag = do
+              aa2_ <- newChan;
+              _2aa <- newChan;
+              fork $ forever $ do
+                m <- readChan aa2_
+                -- liftIO $ putStrLn $ "!S wrapper s->_ received " ++ tag
+                writeChan a2_ (ssid, m)
+              modifyIORef _2ssid $ insert ssid _2aa
+              return (_2aa, aa2_)
+        a2p' <- wrapWrite (\(_, (pid, m)) -> (pid, (ssid, m))) a2p
+        z <- newSsid' z2ssid a2z  "a2z"
+        p <- newSsid' p2ssid a2p' "a2p"
+        fork $ let ?sid = (extendSID ?sid (fst ssid) (snd ssid)) in
+          s z p (undefined, undefined)
+        return ()
+
+  let getSsid _2ssid ssid = do
+        b <- return . member ssid =<< readIORef _2ssid
+        if not b then newSsid ssid else return ()
+        readIORef _2ssid >>= return . (! ssid)
+
+  -- Route messages from environment to simulator
+  fork $ forever $ do
+    (ssid, m) <- readChan z2a
+    liftIO $ putStrLn $ "!S wrapper z->a received " ++ show ssid
+    getSsid z2ssid ssid >>= flip writeChan m
+
+  -- Route messages from protocol to simulator
+  fork $ forever $ do
+    (pid, (ssid, m)) <- readChan p2a
+    liftIO $ putStrLn $ "!S wrapper p->a received " ++ show ssid
+    getSsid p2ssid ssid >>= flip writeChan (pid, m)
+  return ()
+
+{--
+envUnivCom :: (MonadEnvironment m => Environment _ _ _ _ Void Void _ m) ->
+              (MonadProtocol m => Protocol (SID,z2p) (SID,p2z) (SID,f2p) (SID,p2f) m) ->
+              (MonadProtocol m => Protocol (SID,z2p) (SID,p2z) (SID,f2p) (SID,p2f) m) ->
+              (MonadFunctionality m => Functionality _ _ _ _ Void Void m) ->
+              (MonadFunctionality m => Functionality _ _ _ _ Void Void m) ->
+              (Int -> Int) ->
+              Environment (p2z) (z2p) (p2z) (z2p) Void Void (Bool) m
+--}
+envUnivCom z pi phi f g i z2exec (p2z, z2p) (a2z, z2a) (_, _) pump outp = do
+  -- Spawn instances of pi/f or phi/g as necessary. 
+  -- For the first `i-1` instances, spawn pi/f.
+  -- For the `i`th instance, interact with the raw channels.
+  -- For the `i+1` and following instances, spawn phi/g.
+  let i' = i ?secParam
+
+  -- TODO ... finish this environment reduction
+
+  writeChan outp True
+  return ()
