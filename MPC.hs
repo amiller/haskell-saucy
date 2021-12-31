@@ -161,7 +161,14 @@ fABB :: MonadFunctionality m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Voi
 fABB = let ?n = 0; ?t = 0 in fMPC_ False True
 
 
--- Stunning.... the Sh type is parametric in the Z2P/P2Z channels, but Concrete from the viewpoint of the Z2A/A2Z channels. The parametric Sh type enforces the "subroutine respecting" property from UC, namely that the environment (and therefore also any composed protocols) do not access intermediate values (like D,E in beaver multiplication) encapsulated by a subroutine. On the other hand, the adversary and corrupted parties can access their shares of any value they want.
+{-- Notice that the Sh type is parametric in the Z2P/P2Z channels, but
+   concrete from the viewpoint of the Z2A/A2Z channels.
+  The parametric Sh type enforces the "subroutine respecting" property from UC,
+ namely that the environment (and therefore also any composed protocols)
+ do not access intermediate values (like D,E in beaver multiplication)
+ encapsulated by a subroutine. On the other hand, the adversary and corrupted
+ parties can access their shares of any value they want.
+--}
 
 envTestAbb :: MonadEnvironment m =>
   Environment (TestAbbP2Z sh) (TestAbbZ2P) (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void) Void Void String m
@@ -394,6 +401,9 @@ mpcBeaver x y = do
   xy <- lin [(1,de),(1,ab),(d,b),(e,a)]
   return xy
 
+-- These (lin, constant, etc.) are some simple wrappers over
+-- the ?op interface that this MonadMPCProgram provides for talking
+-- to the functionality
 lin xs = do
   rsp <- ?op $ LIN xs
   let FmpcRes_Sh r = rsp
@@ -413,6 +423,8 @@ getTriple = do
   return (a,b,ab)
 
 
+-- This is the adaptor code that replaces the MULT operation
+-- from the ideal fMPC functionality with the mpcBeaver subroutine
 runMPCnewmul :: MonadProtocol m =>
     (forall sh. MonadMPCProgram m sh => sh -> sh -> m sh) ->
     Protocol (FmpcP2F sh) (FmpcF2P sh) (FmpcF2P sh) (FmpcP2F sh) m
@@ -459,7 +471,7 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
           
    return ()
 
-
+-- Now we finish the fMPC definition
 type MonadMPC_F m = (MonadFunctionality m,
                      ?n :: Int,
                      ?t :: Int)
@@ -528,8 +540,7 @@ doMpcOp hasMult readSharing storeFresh inputs op = do
          return $ FmpcRes_Sh k
 
 
-
-
+--- This test environment should give a good coverage of all the interesting real-world protocol behaviors.
 envTestMPC :: MonadEnvironment m =>
   Environment              (FmpcF2P sh)                    (FmpcP2F sh)
               (SttCruptA2Z (FmpcF2P Sh) Void) (SttCruptZ2A (FmpcP2F Sh) Void)
@@ -638,8 +649,24 @@ testMpc1Ideal = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3
 
 testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFunc 3 1 $ fMPC_sansMult) dummyAdversary
 
--- We should construct a simulator simBeaver proving that
---   fMPC_sansMult --Beaver--> fMPC
+
+-- Now it's time to complete our simulator-based security proof for the construction
+--        fMPC_sansMult --mpcBeaver--> fMPC
+--
+-- We need to construct a simulator simBeaver for the dummyAdversary such that 
+-- forall Z. execUC Z (mpcBeaver)    (fMPC_sansMult) (dummyAdversary)
+--         ~ execUC Z (idealProtocol)(fMPC)          (simBeaver)
+--
+-- In a nutshell, the runs an internal mirror of fMPC, with the "shareTble"
+--  and all. As many operations as possible are passed on to the ideal world,
+--  but some are separated. You can skip to the `MULT` case of the commit subroutine
+--  for the application-specific part.
+--
+--  Handles from the environment (over z2a/a2z channels) are kept separate from handles
+--  exchanged with the ideal world (over p2a/a2p channels).
+--  The (z2a/a2z) interactions have concrete type Sh, while the ideal world
+--  interactions have opaque type (forall sh.)
+--
 
 simBeaver :: (Ord sh, MonadAdversary m) => Adversary (SttCruptZ2A (FmpcP2F Sh) Void) (SttCruptA2Z (FmpcF2P Sh) Void) (FmpcF2P sh) (FmpcP2F sh) Void Void m
 simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
