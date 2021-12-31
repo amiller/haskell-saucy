@@ -667,9 +667,6 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
   -- Sh in the environment's real interaction with Sim.
   r2iTable <- newIORef (Map.empty :: Map sh Sh)
   i2rTable <- newIORef (Map.empty :: Map Sh sh)
-  let update sh sSh = do
-        modifyIORef i2rTable $ Map.insert sSh sh
-        modifyIORef r2iTable $ Map.insert sh sSh
 
   -- Generate a fresh handle
   freshCtr <- newIORef 0
@@ -678,10 +675,20 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
         modifyIORef freshCtr $ (+) 1
         return x
 
-  let freshFrom sh = do
-        x <- fresh
-        update sh x
-        return x
+  -- Generate a fresh handle, but it's mapped to a share
+  --   in the Ideal World functionality
+  let freshFromIdeal sh = do
+        sSh <- fresh
+        modifyIORef i2rTable $ Map.insert sSh sh
+        modifyIORef r2iTable $ Map.insert sh sSh
+        return sSh
+
+  -- Generate a fresh handle, but it's mapped to a share
+  --   in the provided polynomial.
+  let freshSimShare phi = do
+        sSh <- fresh
+        modifyIORef shareTable $ Map.insert sSh phi
+        return sSh
   
   -- Whenever we fetch the logs from the ideal world,
   -- if MULT shows up in the log, then we need to substitute it over
@@ -692,45 +699,46 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
       -- liftIO $ putStrLn $ "Commit" ++ show (fmap (const ()) op, fmap (const ()) res)
       case opres of
         (MULT x y, FmpcRes_Sh xy) -> do
-           -- liftIO $ putStrLn $ "Mult was called"
-           -- Add ops for beaver
-           a <- fresh; b <- fresh; ab <- fresh
-           pa <- randomDegree t
-           pb <- randomDegree t
-           pab <- randomWithZero t (eval pa 0 * eval pb 0)
-
            -- TODO: This is an inadequate simulation! Too many degrees of freedom
-           modifyIORef shareTable $ Map.insert a pa
-           modifyIORef shareTable $ Map.insert b pa
-           modifyIORef shareTable $ Map.insert ab pab
+           -- hint: solve for ab rather than sample
+           -- TODO: need to use functionality to look up our shares for x, y
+          
+           -- Step 1. Create simulated polynomials for all the intermediate values
+           -- and preprocessings that show up in the real world protocol but
+           -- not the ideal world.
+           a  <- freshSimShare =<< randomDegree t
+           b  <- freshSimShare =<< randomDegree t
+           ab <- freshSimShare =<< randomDegree t           
+           dphi <- randomDegree t
+           ephi <- randomDegree t
+           let d :: Fq = eval dphi 0
+           let e :: Fq = eval ephi 0
+           x_a <- freshSimShare dphi
+           y_b <- freshSimShare ephi
+           de <- freshSimShare (polyFromCoeffs [d*e])
+           _xy <- freshFromIdeal xy
 
-           -- TODO: need to look up our shares for x, y
-           --  dv(1) should match x-a, etc.
-           x_a <- fresh; y_b <- fresh
-           dv <- randomDegree t
-           ev <- randomDegree t
-           de <- fresh;
-           _xy <- freshFrom xy
+           -- Step 2. Create a simulated real world log. The Ideal world has a
+           --  MULT, so the simulated real will have the BeaverMul ops.
            tbl <- readIORef r2iTable
-           
            addLog (RAND, FmpcRes_Trip (a, b, ab))
            addLog (LIN [(1,fromJust $ Map.lookup x tbl),(-1,a)], FmpcRes_Sh x_a)
-           addLog (OPEN x_a, FmpcRes_Poly dv)
+           addLog (OPEN x_a, FmpcRes_Poly dphi)
            addLog (LIN [(1,fromJust $ Map.lookup y tbl),(-1,b)], FmpcRes_Sh y_b)
-           addLog (OPEN y_b, FmpcRes_Poly ev)
-           addLog (CONST (eval dv 0 * eval ev 0), FmpcRes_Sh de)
-           addLog (LIN [(1,de),(1,ab),(eval dv 0,b),(eval ev 0,a)], FmpcRes_Sh _xy) --}
+           addLog (OPEN y_b, FmpcRes_Poly ephi)
+           addLog (CONST (d*e), FmpcRes_Sh de)
+           addLog (LIN [(1,de),(1,ab),(d,b),(e,a)], FmpcRes_Sh _xy) --}
            return ()
 
         (op, FmpcRes_Sh xy) -> do
-           freshFrom xy
+           freshFromIdeal xy
            tbl <- readIORef r2iTable
            addLog (fmap (fromJust . flip Map.lookup tbl) op,
                    fmap (fromJust . flip Map.lookup tbl) res)
            return ()
 
         (op, FmpcRes_Trip (a, b, ab)) -> do
-           freshFrom a; freshFrom b; freshFrom ab
+           freshFromIdeal a; freshFromIdeal b; freshFromIdeal ab
            tbl <- readIORef r2iTable
            addLog (fmap (fromJust . flip Map.lookup tbl) op,
                    fmap (fromJust . flip Map.lookup tbl) res)
