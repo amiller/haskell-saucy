@@ -659,7 +659,9 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
   -- Simulate the real world fMPC the corrupt parties would interact with
   let initCtrs = [("P:"++show i, 0) | i <- [1.. n]]
   counters <- newIORef $ Map.fromList initCtrs
-
+  a2zlog <- newIORef []  
+  let addLog (op, res) = modifyIORef a2zlog $ (++ [(op,res)])
+  
   -- Store the shares other than the pass-through ones
   shareTable <- newIORef (Map.empty :: Map Sh PolyFq)
 
@@ -689,11 +691,33 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
         sSh <- fresh
         modifyIORef shareTable $ Map.insert sSh phi
         return sSh
+
+  -- Fetch share of corrupted party
+  let myShare pid sh = do
+        -- Fetch from the Ideal functionality if allowed, else access the
+        -- local value
+        tbl <- readIORef i2rTable
+        let i = case pid of "P:1" -> 1
+                            "P:2" -> 2
+                            _ -> error "MyShare called by someone else"
+        case Map.lookup sh tbl of
+          Just s -> do
+            writeChan a2p (pid, FmpcP2F_MyShare s)
+            mf <- readChan p2a
+            let (pid, FmpcF2P_MyShare x) = mf
+            return x
+          Nothing -> do
+            ptbl <- readIORef shareTable
+            let Just phi = Map.lookup sh ptbl
+            return $ eval phi i
   
-  -- Whenever we fetch the logs from the ideal world,
-  -- if MULT shows up in the log, then we need to substitute it over
-  a2zlog <- newIORef []
-  let addLog (op, res) = modifyIORef a2zlog $ (++ [(op,res)])
+  -- We'll keep track of a log of simulated real-world operations. This will be
+  -- populated by following along with the Ideal world operations. Every time
+  -- the log reflects a new operation, the Ideal world operation will be
+  -- committed here, processing one operation at a time.
+  -- The interesting case is when MULT shows up in the log, since we need to
+  -- substitute BeaverMul operations for it.
+  
   let commit opres = do
       let (op, res) = opres
       -- liftIO $ putStrLn $ "Commit" ++ show (fmap (const ()) op, fmap (const ()) res)
@@ -750,9 +774,9 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
            return ()
       return ()
 
-  -- Only commit the newest logs
-  logCtr <- newIORef 0
-  
+  -- Only Process the ideal world log entries that are new, since
+  -- the last time we accessed it.
+  logCtr <- newIORef 0  
   let syncLog pid = do
       -- Fetch the current log
       writeChan a2p $ (pid, FmpcP2F_Log)
@@ -764,11 +788,6 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
       let tail = drop t log
       modifyIORef logCtr (+ length tail)
       forM (fromList tail) $ commit
-
-  let myShare pid sh = do
-      -- let fSans m = Map.lookup tbl sh
-      -- Fetch from the Ideal functionality if allowed, else local
-      writeChan a2p $ (pid, FmpcP2F_MyShare sh)
 
   fork $ forever $ do
     mf <- readChan z2a
@@ -796,23 +815,9 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
 
       FmpcP2F_MyShare sh -> do
         -- Retrieve the simulated share using our mapping
-        let i = case pid of "P:1" -> 1
-                            "P:2" -> 2
-                            _ -> error "MyShare called by someone else"
+        x <- myShare pid sh
+        writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_MyShare x)
 
-        tbl <- readIORef i2rTable
-        case Map.lookup sh tbl of
-         Just s -> do
-           writeChan a2p (pid, FmpcP2F_MyShare s)
-           mf <- readChan p2a
-           let (pid, FmpcF2P_MyShare x) = mf
-           -- liftIO $ putStrLn $ "My Share IDEAL: " ++ show x
-           writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_MyShare x)
-         Nothing -> do
-           ptbl <- readIORef shareTable
-           let Just phi = Map.lookup sh ptbl
-           writeChan a2z $ SttCruptA2Z_P2A (pid, FmpcF2P_MyShare (eval phi i))
-        
       FmpcP2F_Input _ -> do
         error "Not considering corrupt input party"
 
