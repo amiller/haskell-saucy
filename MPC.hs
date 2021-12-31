@@ -76,13 +76,8 @@ mpcCircuitTest = do
   ab  <- mult alice bob
   abc <- mult ab carol
 
-  result <- openAbb abc
+  result <- openShare abc
   return result
-
-openAbb sh = do
-  mp <- ?op $ OPEN sh
-  let FmpcRes_Fq x = mp
-  return x
 
 openShare sh = do
   mp <- ?op $ OPEN sh
@@ -250,7 +245,7 @@ doAbbOp readSecret storeFresh inputs op = do
        OPEN sh -> do
          -- Publish this value in the log
          x <- readSecret sh
-         return $ FmpcRes_Fq x
+         return $ FmpcRes_Poly (polyFromCoeffs [x])
 
        INPUT -> do
          -- Collect next input provided by the input party
@@ -269,8 +264,10 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
   -- Inputs provided by input party
   inputs <- newIORef []
 
-  -- Table of secret data
-  secretTbl <- newIORef (Map.empty :: Map Sh Fq)
+  -- Maps share IDs to secrets
+  -- In MPC mode, these will be degree-t polys, in
+  -- ABB mode they will only be constant (degree-0)
+  shareTbl <- newIORef (Map.empty :: Map Sh PolyFq)
 
   -- Generate a fresh handle
   freshCtr <- newIORef 0
@@ -278,10 +275,6 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
         x <- readIORef freshCtr
         modifyIORef freshCtr $ (+) 1
         return x
-
-  -- For MPC only....
-  -- Maps share IDs to polynomials
-  shareTbl <- newIORef (Map.empty :: Map Sh PolyFq)
 
   -- Counters viewed by each of the participant parties
   let initCtrs = [("P:"++show i, 0) | i <- [1.. ?n]]
@@ -309,28 +302,28 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
     -- immediately and committed to the log of operations.
     FmpcP2F_Op op | pid == "InputParty" -> do
      if hasMPC then do
-       -- In the ABB mode, only operate on secretTable
-       let storeFresh x = do
+       -- In the MPC mode, let the program read/storeFresh the
+       -- table of polynomial secret sharings
+       let storeFresh phi = do
            sh <- fresh
-           modifyIORef shareTbl $ Map.insert sh x
+           modifyIORef shareTbl $ Map.insert sh phi
            return sh
        let readSharing sh = do
            tbl <- readIORef shareTbl
-           let Just x = Map.lookup sh tbl
-           return x
+           let Just phi = Map.lookup sh tbl
+           return phi
        res <- doMpcOp hasMult readSharing storeFresh inputs op
        commit op res
      else do
-       -- In the MPC mode, let the program read/storeFresh the
-       -- table of polynomial secret sharings
+       -- In the ABB mode, we'll only store constant polynomials.
        let storeFresh x = do
            sh <- fresh
-           modifyIORef secretTbl $ Map.insert sh x
+           modifyIORef shareTbl $ Map.insert sh (polyFromCoeffs [x])
            return sh
        let readSecret sh = do
-           tbl <- readIORef secretTbl
-           let Just x = Map.lookup sh tbl
-           return x
+           tbl <- readIORef shareTbl
+           let Just phi = Map.lookup sh tbl
+           return (eval phi 0)
        res <- doAbbOp readSecret storeFresh inputs op
 
        commit op res
