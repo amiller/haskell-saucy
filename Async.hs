@@ -39,7 +39,10 @@ type MonadFunctionalityAsync m l = (MonadFunctionality m,
                                     ?leak :: l -> m ())
 
 eventually :: MonadFunctionalityAsync m l => m () -> m ()
-eventually m = ?eventually m
+eventually = ?eventually
+
+leak :: MonadFunctionalityAsync m l => l -> m ()
+leak = ?leak
 
 {-- The Asynchronous functionality wrapper --}
 {--
@@ -57,10 +60,11 @@ data ClockZ2F = ClockZ2F_MakeProgress deriving Show
 
 {-- Implementation of MonadAsync --}
 
+deleteNth i xs = l ++ r where (l,(_:r)) = splitAt i xs
+
 runAsyncF :: MonadFunctionality m =>
              (MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m)
           -> Functionality p2f f2p (Either ClockA2F a2f) (Either (ClockF2A l) f2a) ClockZ2F Void m
-
 runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   -- Store state for the leakage buffer
@@ -68,9 +72,8 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   -- how to handle "leak"
   let _leak l = do
-        buf <- readIORef leaks
-        let buf' = buf ++ [l]
-        writeIORef leaks buf'
+        modifyIORef leaks (++ [(l)])
+        return ()
 
   -- Store state for the clock
   runqueue <- newIORef []
@@ -90,20 +93,17 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
         l <- readIORef leaks
         writeChan f2a $ (Left $ ClockF2A_Leaks l)
       Left (ClockA2F_Deliver idx) -> do
-        rq <- readIORef runqueue
-        let callback = rq !! idx
-        let rq' = deleteAtIndex idx rq
-        writeIORef runqueue rq'
-        callback
-      Right msg -> do
-        writeChan a2f' msg
+                     q <- readIORef runqueue
+                     modifyIORef runqueue (deleteNth idx)
+                     writeChan (q !! idx) ()
+      Right msg -> writeChan a2f' msg
 
   --  how to handle "eventually"
   let _eventually m = do
-        rq <- readIORef runqueue
-        let rq' = rq ++ [m]
-        writeIORef runqueue rq'
-
+        c :: Chan () <- newChan
+        modifyIORef runqueue (++ [c])
+        fork $ readChan c >> m
+        return ()
 
   -- TODO: add the "delay" option to the environment
   
@@ -114,11 +114,9 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     rq <- readIORef runqueue
     if length rq > 0 then do
         -- Deliver the first message, remove it from buffer
-        let callback = rq !! 0
-        let rq' = deleteAtIndex 0 rq
-        writeIORef runqueue rq'
-        liftIO $ putStrLn $ "[fAsync] sending callback"
-        callback
+        modifyIORef runqueue (deleteNth 0)
+        liftIO $ putStrLn $ "[fAsync] sending callback"        
+        writeChan (rq !! 0) ()
     else error "underflow"
 
   let ?eventually = _eventually; ?leak = _leak in
@@ -157,7 +155,7 @@ fAuth (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     if not (pid == pidS) then error "Invalid sender to fAuth" 
     else do
       writeIORef recorded True
-      ?leak m
+      leak m
       eventually $ writeChan f2p (pidR, FAuthF2P_Deliver m)
     writeChan f2p (pidS, FAuthF2P_OK)
 
@@ -220,12 +218,10 @@ _bangFAsync _leak _eventually f = f
   where
     ?leak = \l -> writeChan _leak (?sid, l)
     ?eventually = \m -> do
-      cb <- newChan
-      ok <- newChan
+      cb :: Chan () <- newChan
+      ok :: Chan () <- newChan
       writeChan _eventually (cb, ok)
-      fork $ do
-        () <- readChan cb
-        m
+      fork $ readChan cb >> m
       readChan ok
 
 
@@ -239,13 +235,13 @@ bangFAsync f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   fork $ forever $ do
     (cb,ok) <- readChan _eventually
-    eventually $ do
+    ?eventually $ do
       writeChan cb ()
     writeChan ok ()
 
   fork $ forever $ do
     l <- readChan _leak
-    ?leak l
+    leak l
 
   bangF (_bangFAsync _leak _eventually f) (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
