@@ -17,11 +17,8 @@ import Data.Poly
 import Data.Field.Galois (Prime, toP)
 import Data.Vector (Vector,forM,fromList)
 
-
-
 import ProcessIO
 import StaticCorruptions
-import OptionallyLeak (MonadOptionally, runOptionally, optionally)
 import Polynomial
 import Safe
 

@@ -42,6 +42,16 @@ SaUCy is a research program that aims to use Universal Composability as the basi
    Theorem: Commitment is realizable in the RO hybrid model
          fRO -> fCom
 
+4. MPC.hs
+   We model a reactive MPC service as an Arithmetic Black Box, that stores secret data and processes a sequence computations on that data. The sequence is comitted in a public log, the functionality ensures that it only leaks what's explicitly disclosed.
+   We show how to use Beaver multiplication to extend a base MPC primitive (with just linear operations) to one with a MULT opcode.
+
+   Functionality: fMPC, fABB 
+
+   Theorem:
+        fMPC_sansMult  ->  fMPC  -> fArithmeticBlackBox
+   
+
 4. Multisession.hs
    Composition operator: The `bangF` operator (!F) creates multiple instances of a functionality, each accessed by a sub-session id
 
