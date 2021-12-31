@@ -42,7 +42,6 @@ instance Show Void where
    F -> !G    G -> H
   ------------------ (juc theorem)
         F -> !H
-
  -}
 
 bangF

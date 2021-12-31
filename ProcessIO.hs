@@ -287,3 +287,90 @@ test2run = runITMinIO 120 test2
 {- run-time checking of a condition or throw exception -}
 require cond msg = if not cond then error msg else return ()
 
+
+
+{-
+Exploring the multiplexer options.
+ --}
+
+qEcho :: MonadITM m => (Chan a, Chan a) -> m ()
+qEcho (fromOpp, toOpp) = do
+  x <- readChan fromOpp
+  writeChan toOpp x
+
+qUnit :: MonadITM m => (Chan p2q, Chan ()) -> m ()
+qUnit (fromOpp, toOpp) = do
+  _ <- readChan fromOpp
+  writeChan toOpp ()
+
+pLeader (fromOpp, toOpp) = do
+  writeChan toOpp 1
+  _ <- readChan fromOpp
+  return ()
+  
+-- First the setup, a generic way of running two well-matched processes.
+runOpposed :: (MonadITM m => (Chan q2p, Chan p2q) -> m ()) ->
+              (MonadITM m => (Chan p2q, Chan q2p) -> m ()) ->
+              MonadITM m => m ()
+runOpposed p q = do
+   q2p <- newChan
+   p2q <- newChan
+   fork $ p (q2p, p2q)
+   fork $ q (p2q, q2p)
+   return ()
+
+{--
+The bounded multiplexer.
+    Left f1 | Right f2
+ -}
+runMux2 :: MonadITM m => ((Chan p2qL, Chan q2pL) -> m ()) ->
+                         ((Chan p2qR, Chan q2pR) -> m ()) ->
+                      (Chan (Either p2qL p2qR), Chan (Either q2pL q2pR)) -> m ()
+runMux2 qL qR (p2q,q2p) = do
+  p2qL <- newChan
+  p2qR <- newChan
+  fork $ forever $ do
+    m <- readChan p2q
+    case m of
+      Left  x -> writeChan p2qL x
+      Right x -> writeChan p2qR x
+  q2pL <- wrapWrite Left  q2p
+  q2pR <- wrapWrite Right q2p
+  fork $ qL (p2qL, q2pL)
+  fork $ qR (p2qR, q2pR)
+  return ()
+
+--myProgramA :: _
+myProgramA (fromOpp, toOpp) = do
+  writeChan toOpp ("test")
+  x <- readChan fromOpp
+  liftIO $ putStrLn $ show x
+  return ()
+
+--myProgram ::
+myProgramB (fromOpp, toOpp) = do
+  writeChan toOpp (Right "ok")
+  mr <- readChan fromOpp
+  let (Right x) = mr
+  liftIO $ putStrLn $ show mr
+  writeChan toOpp (Left "ok")
+  mr <- readChan fromOpp
+  let (Left x) = mr
+  liftIO $ putStrLn $ show mr
+  return ()
+
+testOppA = runITMinIO 120 $ runOpposed myProgramA qEcho
+testOppB = runITMinIO 120 $ runOpposed myProgramB (runMux2 qUnit qUnit)
+
+{--
+ The unbounded multiplexer:
+	Given an infinite number of subsessions, do the following:
+
+    When receiving a new "ssid" never seen before,
+      create a new instance of "f".
+
+    Route messages to and from.
+--}
+
+
+-- runOpposed myProgram (! F)
