@@ -229,8 +229,8 @@ data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
                 | FmpcF2P_WrongFollow
                 | FmpcF2P_MyShare Fq deriving (Show, Functor)
 
-doAbbOp :: (MonadIO m) => IORef (Map Sh Fq) -> m Sh -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
-doAbbOp secretTable fresh inputs op = do
+doAbbOp :: (MonadIO m) => (Sh -> m Fq) -> (Fq -> m Sh) -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
+doAbbOp readSecret storeFresh inputs op = do
      case op of
        MULT x y -> do
          -- Create a new entry by multiplying two existing ones
@@ -260,16 +260,6 @@ doAbbOp secretTable fresh inputs op = do
          k <- storeFresh x
          return $ FmpcRes_Sh k
 
-     where
-       storeFresh x = do
-           sh <- fresh
-           modifyIORef secretTable $ Map.insert sh x
-           return sh
-       readSecret sh = do
-           tbl <- readIORef secretTable
-           let Just x = Map.lookup sh tbl
-           return x
-
 fMPC_ :: MonadMPC_F m => Bool -> Bool -> Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
 
@@ -297,7 +287,6 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
   let initCtrs = [("P:"++show i, 0) | i <- [1.. ?n]]
   counters <- newIORef $ Map.fromList initCtrs
 
-
   -- Commit this operation and output to the log
   let commit op outp = do
         modifyIORef ops $ (++ [(op,outp)])
@@ -320,10 +309,30 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
     -- immediately and committed to the log of operations.
     FmpcP2F_Op op | pid == "InputParty" -> do
      if hasMPC then do
-       res <- doMpcOp hasMult shareTbl fresh inputs op
+       -- In the ABB mode, only operate on secretTable
+       let storeFresh x = do
+           sh <- fresh
+           modifyIORef shareTbl $ Map.insert sh x
+           return sh
+       let readSharing sh = do
+           tbl <- readIORef shareTbl
+           let Just x = Map.lookup sh tbl
+           return x
+       res <- doMpcOp hasMult readSharing storeFresh inputs op
        commit op res
      else do
-       res <- doAbbOp secretTbl fresh inputs op
+       -- In the MPC mode, let the program read/storeFresh the
+       -- table of polynomial secret sharings
+       let storeFresh x = do
+           sh <- fresh
+           modifyIORef secretTbl $ Map.insert sh x
+           return sh
+       let readSecret sh = do
+           tbl <- readIORef secretTbl
+           let Just x = Map.lookup sh tbl
+           return x
+       res <- doAbbOp readSecret storeFresh inputs op
+
        commit op res
      
     -- Operations from MPC parties are in "Follow" mode.
@@ -469,8 +478,8 @@ fMPC_sansMult :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Vo
 fMPC_sansMult = fMPC_ True False
 
 
-doMpcOp :: (MonadMPC_F m) => Bool -> IORef (Map Sh PolyFq) -> m Sh -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
-doMpcOp hasMult shareTbl fresh inputs op = do
+doMpcOp :: (MonadMPC_F m) => Bool -> (Sh -> m PolyFq)  -> (PolyFq -> m Sh) -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
+doMpcOp hasMult readSharing storeFresh inputs op = do
    case op of
        MULT x y -> do
          -- This is a parameter so we can show how to realize it from
@@ -525,15 +534,6 @@ doMpcOp hasMult shareTbl fresh inputs op = do
          k <- storeFresh phi
          return $ FmpcRes_Sh k
 
-   where
-       storeFresh x = do
-           sh <- fresh
-           modifyIORef shareTbl $ Map.insert sh x
-           return sh
-       readSharing sh = do
-           tbl <- readIORef shareTbl
-           let Just x = Map.lookup sh tbl
-           return x
 
 
 
