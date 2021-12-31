@@ -50,8 +50,9 @@ data Void
  - LIN defines a linear combination over existing secret values
  - MULT we'll mention in a moment
 
- The type of share IDs is Sh.
-
+ The type of a concrete share ID is Sh, just an integer.
+ But polymorphism will play a key role later on: basically the honest protocol
+ will treat this as a (forall sh.), while the adversary can see Sh.
 
  Our main functionality `fMPC` keeps track of not just the secret data,
   but also the entire secret sharing polynomial. Naturally, each of
@@ -63,8 +64,22 @@ data Void
 
  To summarize, our overall construction plan is:
    fMPC_sansMult  ---Beaver---> fMPC ---Adaptor---> fABB
+
+ Part I: We'll start a program for fABB, and the definition of
+  fABB using just secrets.
+
+ Part II: Next we'll show the mpcBeaver program, and build up
+   the fMPC using secret sharing.
+
+ Part III: The key protocol is substituting mpcBeaver for the MULT
+   operation, so we have to construct
+          fMPC_sansMult ---Beaver--> fMPC
+
+ Part IV: Completing the proof means giving a simulator simBeaver
+
  --}
 
+{-- Part I. --}
 -- First a test program to illustrate the high-level
 -- application interface of fABB.
 mpcCircuitTest :: MonadMPCProgram m sh => m Fq
@@ -111,8 +126,12 @@ data FmpcRes sh = FmpcRes_Ok
 type MonadMPCProgram m sh = (MonadIO m,
                              ?op :: FmpcOp sh -> m (FmpcRes sh))
 
+{-- Running the application as a protocol using fABB.
 
--- Running the application as a protocol using fABB
+  Note that this protocol is parametric (forall sh.) in the type of all
+  its channels, both (z2p,p2z) as well as (f2p,p2f).
+  This will be important shortly!
+--}
 
 data TestAbbZ2P = TestAbbZ2P_Inputs (Fq,Fq,Fq)
                 | TestAbbZ2P_Log 
@@ -153,21 +172,39 @@ runAbbTestProg mpcProg (z2p,p2z) (f2p,p2f) = do
       
    return ()
 
-
--- Defining the fABB functionality (the main body of it comes later)
+{-- Defining the fABB functionality (the main body of it comes later)
+    Notice that here, unlike in the protocol, the Sh type is concrete,
+      just an Int, on all its channels (p2f,f2p) and (a2f,f2a).
+  --}
 type Sh = Int
 
 fABB :: MonadFunctionality m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fABB = let ?n = 0; ?t = 0 in fMPC_ False True
 
 
-{-- Notice that the Sh type is parametric in the Z2P/P2Z channels, but
+
+{-- Now for a test environment.
+  Notice that here the sh type is parametric in the Z2P/P2Z channels, but
    concrete from the viewpoint of the Z2A/A2Z channels.
-  The parametric Sh type enforces the "subroutine respecting" property from UC,
- namely that the environment (and therefore also any composed protocols)
- do not access intermediate values (like D,E in beaver multiplication)
- encapsulated by a subroutine. On the other hand, the adversary and corrupted
- parties can access their shares of any value they want.
+
+, The fABB and fMPC functionalities will represent handles concretely
+   as Sh. The functionality itself provides no inherent defense against
+   "guessing" handles. In particular, nothing prevents the adversary
+   from requesting information about their own shares of intermediate
+   values used within a subroutine.
+
+  The parametric Sh type in (p2z,z2p) enforces the "subroutine respecting" property from UC,
+   namely that the environment (and therefore also any composed protocols)
+   do not access intermediate values (like D,E in beaver multiplication)
+   encapsulated by a subroutine.
+
+  Essentially by constraining the type of the environment to be parametric in the handle
+   type, the environment cannot ask honest parties to use handles other than those
+   returned by the interface.
+
+  A consequence of this polymorphism is that while the logs from honest parties
+   contain sh, we can't write code that prints these. Haskellers will appreciate
+   the use of `fmap` to make a generic log sanitizer for free.
 --}
 
 envTestAbb :: MonadEnvironment m =>
@@ -216,10 +253,23 @@ testMpc0 = runITMinIO 120 $ execUC envTestAbb (runAbbTestProg mpcCircuitTest) (f
 
 
 {--
-   Here we return to fill out some missing definitions,
-   the table of MPC opcodes, and the functionality shell
-   for that we'll customize. --}
+   Now we proceed with filling out the missing definitions of fABB and fMPC.
+   The definition is based around two parts,
+    I.(A) a handler for every opcode,
+    I.(B) a generic shell, that keeps track of the log of all the operations
+      and their results, which it can serve to any party upon request.
 
+   The generic shell (B) has a flag to pick either the idealized ABB (for now)
+    or more concrete MPC handlers (for later). So here its type is general,
+    storing a PolyFq when really just an Fq would do (since for Abb it's
+    always just degree-0).
+
+   Remember that the functionality will define a concrete Sh handle type,
+    but this will only be important in part (B). For the opcodes (A) these
+    treat the handles opaquely too, but this is just for convenience.
+ --}
+
+-- I.(A) Opcode handlers
 data FmpcP2F sh = FmpcP2F_Op (FmpcOp sh)
                 | FmpcP2F_Log
                 | FmpcP2F_Input Fq
@@ -231,7 +281,7 @@ data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
                 | FmpcF2P_WrongFollow
                 | FmpcF2P_MyShare Fq deriving (Show, Functor)
 
-doAbbOp :: (MonadIO m) => (Sh -> m Fq) -> (Fq -> m Sh) -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
+doAbbOp :: (MonadIO m) => (sh -> m Fq) -> (Fq -> m sh) -> IORef [Fq] -> FmpcOp sh -> m (FmpcRes sh)
 doAbbOp readSecret storeFresh inputs op = do
      case op of
        MULT x y -> do
@@ -243,7 +293,7 @@ doAbbOp readSecret storeFresh inputs op = do
 
        LIN cs -> do
          -- Create a new entry from a linear combination of existing ones
-         r <- foldM (\r -> \(c::Fq,sh::Sh) -> do
+         r <- foldM (\r -> \(c::Fq,sh) -> do
             x <- readSecret sh
             return $ r + c * x) 0 cs
          k <- storeFresh r
@@ -262,6 +312,10 @@ doAbbOp readSecret storeFresh inputs op = do
          k <- storeFresh x
          return $ FmpcRes_Sh k
 
+-- (I).B. Generic log handler for fMPC
+{--
+ Here when defining the lag handler shell
+--}
 fMPC_ :: MonadMPC_F m => Bool -> Bool -> Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
 fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
 
@@ -369,27 +423,22 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
   return ()
          
 
-  
+{-- Part II. --}  
 {----
+Before we define the fMPC hybrid world functionality in more detail,
+  we want to motivate some of our design choices, especially being
+  pseudocode-friendly.
 
-Defining the fMPC hybrid world functionality in more detail.
-  We want to show how our MPC can be extensible, in particular the way we add MULT should be a good example for how to add other similar MPC subroutines.
+ As our starting point, we know we want to write MPC pseudocode that
+ looks like:
 
- We know we want to write MPC pseudocode that looks like:
  BeaverMult: [x] [y]
    Preprocessing get [a][b][ab].
    D = open([x]-[a])
    E = open([y]-[b])
    return [xy] := DE + [ab] + D[b] + E[a]
 
- We can make use of encapsulation... the functionality provides fresh handles, which
-   are kept within the subroutine.
- However, the functionality represents these as integers. Nothing prevents the adversary
-   from requesting information about shares of intermediate values used within the
-   subroutine.
- Essentially by constraining the type of the environment to be parametric in the handle
-   type, the environment cannot ask honest parties to use handles other than those
-   returned by the interface.
+ Behold!
  ---}
 
 mpcBeaver :: MonadMPCProgram m sh => sh -> sh -> m sh
@@ -422,6 +471,90 @@ getTriple = do
   let FmpcRes_Trip(a,b,ab) = r
   return (a,b,ab)
 
+{--
+ Now we get to the fMPC definition. Since we reuse the generic shell
+ from earlier, all we have to do now is give new opcode handlers.
+--}
+
+type MonadMPC_F m = (MonadFunctionality m,
+                     ?n :: Int,
+                     ?t :: Int)
+
+fMPC :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
+fMPC = fMPC_ True True
+
+fMPC_sansMult :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
+fMPC_sansMult = fMPC_ True False
+
+
+doMpcOp :: (MonadMPC_F m) => Bool -> (sh -> m PolyFq)  -> (PolyFq -> m sh) -> IORef [Fq] -> FmpcOp sh -> m (FmpcRes sh)
+doMpcOp hasMult readSharing storeFresh inputs op = do
+   case op of
+       MULT x y -> do
+         -- This is a parameter so we can show how to realize it from
+         -- the other operations. Generates a random polynomial whose
+         -- zero-value coincides with the product of x and y
+         if hasMult then do
+           xphi <- readSharing x
+           yphi <- readSharing y
+           phi <- randomWithZero ?t (eval xphi 0 * eval yphi 0)
+           liftIO $ putStrLn $ "PHI" ++ show phi
+           xy <- storeFresh phi
+           return $ FmpcRes_Sh xy
+         else error "mult unimplemented"
+
+       LIN cs -> do
+         -- Construct a new secret sharing polynomial simply by
+         -- scaling and summing the linear combination of existing
+         -- polys from the table
+         r <- foldM (\r -> \(c,sh) ->  do
+                     x <- readSharing sh
+                     return $ r + (polyFromCoeffs [c]) * x) polyZero cs
+         k <- storeFresh r
+         return $ FmpcRes_Sh k
+
+       OPEN k -> do
+         -- The result of opening is included directly in the log
+         phi <- readSharing k
+         return $ FmpcRes_Poly phi
+
+       CONST v-> do
+         -- Create the constant (degree-0) poly
+         let phi = polyFromCoeffs [v]
+         k <- storeFresh phi
+         return $ FmpcRes_Sh k
+
+       RAND -> do
+         -- Return a beaver triple
+         a <- randomDegree ?t
+         b <- randomDegree ?t
+         ab <- randomWithZero ?t (eval a 0 * eval b 0)
+         ka <- storeFresh a
+         kb <- storeFresh b
+         kab <- storeFresh ab
+         return $ FmpcRes_Trip (ka, kb, kab)
+
+       INPUT -> do
+         -- Collect inputs provied by the input party
+         inps <- readIORef inputs
+         let x:rest = inps
+         writeIORef inputs rest
+         phi <- randomWithZero ?t x
+         k <- storeFresh phi
+         return $ FmpcRes_Sh k
+  
+
+{-- Part III. --}
+{--
+ Recall that our goal is to do the construction:
+    fMPC_sansMult ---mpcBeaver--> fMPC
+
+ So it's not enough just to run mpcBeaver, we also need an adaptor
+   around it so it presents on its (z2p,p2z) channels as fMPC,
+   even though it actually interacts with the fMPC_sansMult.
+   Basically it needs to substitute the MULT operations with the
+   mpcBeaver program, while passing everything else through.
+--}
 
 -- This is the adaptor code that replaces the MULT operation
 -- from the ideal fMPC functionality with the mpcBeaver subroutine
@@ -471,73 +604,6 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
           
    return ()
 
--- Now we finish the fMPC definition
-type MonadMPC_F m = (MonadFunctionality m,
-                     ?n :: Int,
-                     ?t :: Int)
-
-fMPC :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
-fMPC = fMPC_ True True
-
-fMPC_sansMult :: MonadMPC_F m => Functionality (FmpcP2F Sh) (FmpcF2P Sh) Void Void Void Void m
-fMPC_sansMult = fMPC_ True False
-
-
-doMpcOp :: (MonadMPC_F m) => Bool -> (Sh -> m PolyFq)  -> (PolyFq -> m Sh) -> IORef [Fq] -> FmpcOp Sh -> m (FmpcRes Sh)
-doMpcOp hasMult readSharing storeFresh inputs op = do
-   case op of
-       MULT x y -> do
-         -- This is a parameter so we can show how to realize it from
-         -- the other operations. Generates a random polynomial whose
-         -- zero-value coincides with the product of x and y
-         if hasMult then do
-           xphi <- readSharing x
-           yphi <- readSharing y
-           phi <- randomWithZero ?t (eval xphi 0 * eval yphi 0)
-           liftIO $ putStrLn $ "PHI" ++ show phi
-           xy <- storeFresh phi
-           return $ FmpcRes_Sh xy
-         else error "mult unimplemented"
-
-       LIN cs -> do
-         -- Construct a new secret sharing polynomial simply by
-         -- scaling and summing the linear combination of existing
-         -- polys from the table
-         r <- foldM (\r -> \(c::Fq,sh::Sh) ->  do
-                     x <- readSharing sh
-                     return $ r + (polyFromCoeffs [c]) * x) polyZero cs
-         k <- storeFresh r
-         return $ FmpcRes_Sh k
-
-       OPEN k -> do
-         -- The result of opening is included directly in the log
-         phi <- readSharing k
-         return $ FmpcRes_Poly phi
-
-       CONST v-> do
-         -- Create the constant (degree-0) poly
-         let phi = polyFromCoeffs [v]
-         k <- storeFresh phi
-         return $ FmpcRes_Sh k
-
-       RAND -> do
-         -- Return a beaver triple
-         a <- randomDegree ?t
-         b <- randomDegree ?t
-         ab <- randomWithZero ?t (eval a 0 * eval b 0)
-         ka <- storeFresh a
-         kb <- storeFresh b
-         kab <- storeFresh ab
-         return $ FmpcRes_Trip (ka, kb, kab)
-
-       INPUT -> do
-         -- Collect inputs provied by the input party
-         inps <- readIORef inputs
-         let x:rest = inps
-         writeIORef inputs rest
-         phi <- randomWithZero ?t x
-         k <- storeFresh phi
-         return $ FmpcRes_Sh k
 
 
 --- This test environment should give a good coverage of all the interesting real-world protocol behaviors.
@@ -649,7 +715,7 @@ testMpc1Ideal = runITMinIO 120 $ execUC envTestMPC (idealProtocol) (runMPCFunc 3
 
 testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runMPCFunc 3 1 $ fMPC_sansMult) dummyAdversary
 
-
+{-- Part IV. --}
 -- Now it's time to complete our simulator-based security proof for the construction
 --        fMPC_sansMult --mpcBeaver--> fMPC
 --
@@ -662,11 +728,20 @@ testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runM
 --  but some are separated. You can skip to the `MULT` case of the commit subroutine
 --  for the application-specific part.
 --
---  Handles from the environment (over z2a/a2z channels) are kept separate from handles
+-- Handles from the environment (over z2a/a2z channels) are kept separate from handles
 --  exchanged with the ideal world (over p2a/a2p channels).
 --  The (z2a/a2z) interactions have concrete type Sh, while the ideal world
---  interactions have opaque type (forall sh.)
+--  interactions have a *mostly* opaque type, (Ord sh). This allows the
+--  environment to store handles in the map, but it cannot generate handles
+--  other than what it has received.
 --
+-- This is the key way in which the typechecker pays off in helping structure
+--  the simulator.
+--
+--  
+--
+-- 
+-- 
 
 simBeaver :: (Ord sh, MonadAdversary m) => Adversary (SttCruptZ2A (FmpcP2F Sh) Void) (SttCruptA2Z (FmpcF2P Sh) Void) (FmpcF2P sh) (FmpcP2F sh) Void Void m
 simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
