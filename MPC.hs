@@ -9,7 +9,7 @@ module MPC where
 
 import Control.Concurrent.MonadIO
 import Data.IORef.MonadIO
-import Data.Map.Strict (member, empty, insert, Map)
+import Data.Map.Strict (member, empty, insert, Map, (!))
 import qualified Data.Map.Strict as Map
 import Control.Monad (forever,foldM)
 
@@ -366,10 +366,7 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
            sh <- fresh
            modifyIORef shareTbl $ Map.insert sh phi
            return sh
-       let readSharing sh = do
-           tbl <- readIORef shareTbl
-           let Just phi = Map.lookup sh tbl
-           return phi
+       let readSharing sh = readIORef shareTbl >>= return . (! sh)
        res <- doMpcOp hasMult readSharing storeFresh inputs op
        commit op res
      else do
@@ -379,8 +376,7 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
            modifyIORef shareTbl $ Map.insert sh (polyFromCoeffs [x])
            return sh
        let readSecret sh = do
-           tbl <- readIORef shareTbl
-           let Just phi = Map.lookup sh tbl
+           phi <- readIORef shareTbl >>= return . (! sh)
            return (eval phi 0)
        res <- doAbbOp readSecret storeFresh inputs op
 
@@ -391,8 +387,7 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
     -- against the next one chosen by the input party.
     -- They receive the output, typically a handle.
     FmpcP2F_Op op | hasMPC && (not (pid == "InputParty")) -> do
-     ctbl <- readIORef counters
-     let Just c = Map.lookup pid ctbl
+     c <- readIORef counters >>= return . (! pid)
      oplist <- readIORef ops
      let (op',res) = oplist !! c
      if op == op' then do
@@ -743,8 +738,6 @@ testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runMPCnewmul mpcBeaver) (runM
 simBeaver :: (Ord sh, MonadAdversary m) => Adversary (SttCruptZ2A (FmpcP2F Sh) Void) (SttCruptA2Z (FmpcF2P Sh) Void) (FmpcF2P sh) (FmpcP2F sh) Void Void m
 simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
   let n = 3; t=1
-  let fromJust (Just m) = m
-      fromJust Nothing = -1
 
   -- Simulate the real world fMPC the corrupt parties would interact with
   let initCtrs = [("P:"++show i, 0) | i <- [1.. n]]
@@ -797,8 +790,7 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
             let (pid, FmpcF2P_MyShare x) = mf
             return x
           Nothing -> do
-            ptbl <- readIORef shareTable
-            let Just phi = Map.lookup sh ptbl
+            phi <- readIORef shareTable >>= return .(! sh)
             return $ eval phi i
   
   -- We'll keep track of a log of simulated real-world operations. This will be
@@ -836,9 +828,9 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
            --  MULT, so the simulated real will have the BeaverMul ops.
            tbl <- readIORef r2iTable
            addLog (RAND, FmpcRes_Trip (a, b, ab))
-           addLog (LIN [(1,fromJust $ Map.lookup x tbl),(-1,a)], FmpcRes_Sh x_a)
+           addLog (LIN [(1, tbl ! x),(-1,a)], FmpcRes_Sh x_a)
            addLog (OPEN x_a, FmpcRes_Poly dphi)
-           addLog (LIN [(1,fromJust $ Map.lookup y tbl),(-1,b)], FmpcRes_Sh y_b)
+           addLog (LIN [(1, tbl ! y),(-1,b)], FmpcRes_Sh y_b)
            addLog (OPEN y_b, FmpcRes_Poly ephi)
            addLog (CONST (d*e), FmpcRes_Sh de)
            addLog (LIN [(1,de),(1,ab),(d,b),(e,a)], FmpcRes_Sh _xy) --}
@@ -847,20 +839,20 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
         (op, FmpcRes_Sh xy) -> do
            freshFromIdeal xy
            tbl <- readIORef r2iTable
-           addLog (fmap (fromJust . flip Map.lookup tbl) op,
-                   fmap (fromJust . flip Map.lookup tbl) res)
+           addLog (fmap (tbl !) op,
+                   fmap (tbl !) res)
            return ()
 
         (op, FmpcRes_Trip (a, b, ab)) -> do
            freshFromIdeal a; freshFromIdeal b; freshFromIdeal ab
            tbl <- readIORef r2iTable
-           addLog (fmap (fromJust . flip Map.lookup tbl) op,
-                   fmap (fromJust . flip Map.lookup tbl) res)
+           addLog (fmap (tbl !) op,
+                   fmap (tbl !) res)
            return ()
         (op,res) -> do
            tbl <- readIORef r2iTable
-           addLog (fmap (fromJust . flip Map.lookup tbl) op,
-                   fmap (fromJust . flip Map.lookup tbl) res)
+           addLog (fmap (tbl !) op,
+                   fmap (tbl !) res)
            return ()
       return ()
 
@@ -893,8 +885,7 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
       FmpcP2F_Op op -> do
         -- In real would match with log
         syncLog pid
-        ctbl <- readIORef counters
-        let Just c = Map.lookup pid ctbl
+        c <- readIORef counters >>= return . (! pid)
         oplist <- readIORef a2zlog
         let (op',res) = oplist !! c
         if op == op' then do
