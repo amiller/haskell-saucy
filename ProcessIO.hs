@@ -49,7 +49,7 @@ import Control.Concurrent.MonadIO
 import Control.Monad (forever, forM_, replicateM_)
 import Data.IORef.MonadIO
 import System.Random
-
+import Data.Map.Strict hiding (drop,splitAt)
 
 {-- Typeclass for ITMs --}
 
@@ -84,21 +84,43 @@ wrapRead f c = do
   fork $ forever $ readChan c >>= writeChan d . f 
   return d
 
-twoplex :: HasFork m => Chan a -> Chan b -> m (Chan (Either a b))
-twoplex a b = do
+-- Multiplexes two "read" channels into a single new read channel
+twoplexRd :: HasFork m => Chan a -> Chan b -> m (Chan (Either a b))
+twoplexRd a b = do
   c <- newChan
   fork $ forever $ readChan a >>= writeChan c . Left
   fork $ forever $ readChan b >>= writeChan c . Right
   return c
 
-detwoplex :: HasFork m => Chan (Either a b) -> m (Chan a, Chan b)
-detwoplex ab = forever $ do
+-- Multiplexes two "write" channels into a single read channel
+twoplexWr :: HasFork m => Chan a -> Chan b -> m (Chan (Either a b))
+twoplexWr a b = do
+  c <- newChan
+  fork $ forever $ do
+    m <- readChan c
+    case m of Left  x -> writeChan a x
+              Right x -> writeChan b x
+  return c
+
+-- Demultiplexes a "read" chanenl into two separate read channels
+detwoplexRd :: HasFork m => Chan (Either a b) -> m (Chan a, Chan b)
+detwoplexRd ab = forever $ do
   a <- newChan
   b <- newChan
-  x <- readChan ab
-  case x of
-    Left  y -> writeChan a y
-    Right y -> writeChan b y
+  fork $ forever $ do
+    x <- readChan ab
+    case x of
+      Left  y -> writeChan a y
+      Right y -> writeChan b y
+  return (a,b)
+
+-- Demultiplexes a "write" channel into two separate write channels
+detwoplexWr :: HasFork m => Chan (Either a b) -> m (Chan a, Chan b)
+detwoplexWr ab = forever $ do
+  a <- newChan
+  b <- newChan
+  fork $ forever $ readChan a >>= writeChan ab . Left
+  fork $ forever $ readChan b >>= writeChan ab . Right
   return (a,b)
 
 
@@ -233,7 +255,7 @@ flipWrite a b = do
   else      writeChan b ()
 
 counter a b = do
-  ab <- twoplex a b
+  ab <- twoplexWr a b
   let counter' n = do
                 c <- readChan ab
                 case c of 
@@ -298,13 +320,15 @@ Exploring the multiplexer options.
 
 qEcho :: MonadITM m => (Chan a, Chan a) -> m ()
 qEcho (fromOpp, toOpp) = do
-  x <- readChan fromOpp
-  writeChan toOpp x
+  forever $ do
+    x <- readChan fromOpp
+    writeChan toOpp x
 
 qUnit :: MonadITM m => (Chan p2q, Chan ()) -> m ()
 qUnit (fromOpp, toOpp) = do
-  _ <- readChan fromOpp
-  writeChan toOpp ()
+  forever $ do
+    _ <- readChan fromOpp
+    writeChan toOpp ()
 
 pLeader (fromOpp, toOpp) = do
   writeChan toOpp 1
@@ -319,27 +343,20 @@ runOpposed p q = do
    q2p <- newChan
    p2q <- newChan
    fork $ q (p2q, q2p)
-   p (q2p, p2q)
-   -- Return when p is finished
-   return ()
+   p (q2p, p2q)    -- Return when p is finished
+   return () 
 
 {--
-The bounded multiplexer.
+The simple bounded multiplexer.
     Left f1 | Right f2
+This is easy, we go ahead and immediately create both instances.
  -}
 runMux2 :: MonadITM m => ((Chan p2qL, Chan q2pL) -> m ()) ->
                          ((Chan p2qR, Chan q2pR) -> m ()) ->
                       (Chan (Either p2qL p2qR), Chan (Either q2pL q2pR)) -> m ()
 runMux2 qL qR (p2q,q2p) = do
-  p2qL <- newChan
-  p2qR <- newChan
-  fork $ forever $ do
-    m <- readChan p2q
-    case m of
-      Left  x -> writeChan p2qL x
-      Right x -> writeChan p2qR x
-  q2pL <- wrapWrite Left  q2p
-  q2pR <- wrapWrite Right q2p
+  (p2qL,p2qR) <- detwoplexRd p2q
+  (q2pL,q2pR) <- detwoplexWr q2p
   fork $ qL (p2qL, q2pL)
   fork $ qR (p2qR, q2pR)
   return ()
@@ -367,14 +384,92 @@ testOppA = runITMinIO 120 $ runOpposed myProgramA qEcho
 testOppB = runITMinIO 120 $ runOpposed myProgramB (runMux2 qUnit qEcho)
 
 {--
- The unbounded multiplexer:
-	Given an infinite number of subsessions, do the following:
+ The unbounded multiplexer, !q.
+    We don't know in advance how many sessions there will be.
 
-    When receiving a new "ssid" never seen before,
-      create a new instance of "f".
+    So when receiving a new "sid" never seen before,
+      create a new instance of "q".
 
-    Route messages to and from.
+    Route messages to and from the internally running instances.
 --}
 
+bangQ :: MonadITM m =>
+              ((Chan          p2q , Chan          q2p ) -> m ()) ->
+               (Chan (String, p2q), Chan (String, q2p)) -> m ()
+bangQ q (p2q,q2p) = do
+  -- Store a table that maps each ID to a write channel (p2q) used
+  -- to send a message to the corresponding sub-instance of f
+  p2qid <- newIORef empty
 
--- runOpposed myProgram (! F)
+  -- subroutine to install a new instance
+  let newSession sid = do
+        liftIO $ putStrLn $ "Creating new instance [" ++ show sid ++ "]"
+        -- Write end
+        qq2p <- wrapWrite (\m -> (sid,m)) q2p
+        -- Read end
+        p2qq <- newChan
+        modifyIORef p2qid $ insert sid p2qq
+        fork $ q (p2qq, qq2p)
+        return ()
+
+  -- Retrieve the {q2p} writechannel by SID (or install a new one
+  -- if this is the first such message)
+  let getSid sid = do
+        seenBefore <- return . member sid =<< readIORef p2qid
+        if not seenBefore then newSession sid else return ()
+        readIORef p2qid >>= return . (! sid)
+
+  -- Route messages from (p2q) opponent to subinstances
+  forever $ do
+    (sid, m) <- readChan p2q
+    p2qid <- getSid sid
+    writeChan p2qid m
+
+
+myProgramC :: MonadITM m => (Chan (String, String), Chan (String, String))-> m ()
+myProgramC (fromOpp, toOpp) = do
+  writeChan toOpp ("Alice", "hi alice")
+  mr <- readChan fromOpp
+  let ("Alice", x) = mr
+  liftIO $ putStrLn $ show mr
+  
+  writeChan toOpp ("Bob", "ok bob")
+  mr <- readChan fromOpp
+  let ("Bob", x) = mr
+  liftIO $ putStrLn $ show mr
+  
+  writeChan toOpp ("Alice", "hi a second time, alice")
+  mr <- readChan fromOpp
+  let ("Alice", x) = mr
+  liftIO $ putStrLn $ show mr
+  
+  return ()
+
+testOppC = runITMinIO 120 $ runOpposed myProgramC (bangQ qEcho)
+
+
+{--
+   Read (once) on either a or b, returning whichever is ready first,
+   After this action returns, both channels are "available" again for
+   the caller to read on.
+--}
+
+selectRead a b = do
+  poll <- newChan
+  a_id <- fork $ readChan a >>= writeChan poll . Left
+  b_id <- fork $ readChan b >>= writeChan poll . Right
+  res <- readChan poll
+  killThread a_id
+  killThread b_id
+  return res
+
+testSelect = runITMinIO 120 $ do
+  a <- newChan
+  b <- newChan
+  fork  $ flipWrite a b
+  res <- selectRead a b
+  liftIO $ putStrLn $ show res
+  fork  $ flipWrite a b
+  res <- selectRead a b
+  liftIO $ putStrLn $ show res  
+      

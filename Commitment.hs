@@ -5,7 +5,7 @@
 
 import Control.Concurrent.MonadIO
 import Data.IORef.MonadIO
-import Data.Map.Strict (member, empty, insert, Map)
+import Data.Map.Strict (member, empty, insert, Map, (!))
 import qualified Data.Map.Strict as Map
 import Control.Monad (forever)
 import Control.Monad.Trans.Reader
@@ -433,10 +433,9 @@ fTwoWayAndRO (p2f, f2p) _ _ = do
                 | pid == pidR -> writeChan f2p (pidS, RoF2P_m m)
       RoP2F_Ro m -> do
         tbl <- readIORef table
-        if member (show m) tbl then do
-          let Just h = Map.lookup (show m) tbl in
-            writeChan f2p (pid, RoF2P_Ro h)
-          else do
+        if member (show m) tbl then
+          writeChan f2p (pid, RoF2P_Ro (tbl ! show m))
+        else do
           h <- getNbits 120 -- generate a random string
           modifyIORef table (Map.insert (show m) h)
           writeChan f2p (pid, RoF2P_Ro h)
@@ -515,10 +514,9 @@ simComm (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
           h::Int <- getNbits 120
           modifyIORef table     (Map.insert (nonce,b) h)
           modifyIORef backtable (Map.insert h (nonce,b))
-        else return ()
+          else return ()
         tbl <- readIORef table
-        let Just h = Map.lookup (nonce,b) tbl
-        writeChan a2z (pidS, RoF2P_Ro h)
+        writeChan a2z (pidS, RoF2P_Ro (tbl ! (nonce,b)))
 
       RoP2F_m (ProtComm_Commit h) -> do
         -- Corrupt sender passes a commitment to the receiver. Look up
@@ -563,8 +561,7 @@ simComm (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     mh <- readChan a2r
     let RoP2F_Ro q = mh
     tbl <- readIORef table
-    let Just h = Map.lookup q tbl
-    writeChan a2z (pidR, RoF2P_Ro h)
+    writeChan a2z (pidR, RoF2P_Ro (tbl ! q))
    return ()
   else return ()
 
