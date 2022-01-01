@@ -46,7 +46,7 @@
 module ProcessIO where
 
 import Control.Concurrent.MonadIO
-import Control.Monad (forever, forM_, replicateM_)
+import Control.Monad (forever, forM, forM_, replicateM_)
 import Data.IORef.MonadIO
 import System.Random
 import Data.Map.Strict hiding (drop,splitAt)
@@ -473,3 +473,60 @@ testSelect = runITMinIO 120 $ do
   res <- selectRead a b
   liftIO $ putStrLn $ show res  
       
+
+{--- Counter examples.
+   Why are the ILC rules defined the way they are?
+   What would go wrong if we allowed race conditions?
+---}
+
+{-
+   (I) In the first example, we look at the possibility of a race
+   condition involving "write."
+
+   We can't model the scheduler's choices simply as a fair probability
+   distribution, since that would be an unusually strong assumption. In
+   this example, only 1 out of the 2^12 possible schedules is a problem.
+   But we can't justify this in the formal model.
+--}
+
+counterExampleProgram :: MonadITM m => m ()
+counterExampleProgram = do
+  a <- newChan
+  b <- newChan
+  c <- newChan
+  d <- newChan
+
+  -- This is a hardcoded sequence, so it's common knowledge
+  -- (to parties as well as to any "scheduler" we imagine)
+  let myFixedCode = [0,1,0,0,0,1,0,0,1,1,0,1]
+
+  let prog (-1) _ _ _ _ = return ()
+      prog n a b c d = do
+        mf <- selectRead a b
+        let f = case mf of Left  _ -> 0
+                           Right _ -> 1
+        if f == myFixedCode !! n then do
+          case mf of Left  _ -> writeChan c ()
+                     Right _ -> writeChan d ()
+          
+          prog (n-1) a b c d
+        else error "The scheduler activated my trapdoor!"
+
+  fork $ forever $ do
+    writeChan a ()
+    readChan c
+  fork $ forever $ do
+    writeChan b ()
+    readChan d
+
+  prog 11 a b c d
+  
+testCe1 = runITMinIO 120 $ counterExampleProgram
+
+
+{-
+   (II) In the second example, we look at the possibility of conveying
+   secret information to the scheduler via choices.
+
+   TODO
+--}
