@@ -664,10 +664,12 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   writeChan z2p $ ("P:2", FmpcP2F_Op $ CONST 5)
   () <- readChan pump; liftIO $ putStrLn "pump"
   _y <- readIORef lastHandle; let Just y = _y
-  writeChan z2p $ ("P:2", FmpcP2F_Op $ MULT x y)
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  _xy <- readIORef lastHandle; let Just xy = _xy
-  writeChan z2p $ ("P:2", FmpcP2F_MyShare xy)
+  liftIO $ putStrLn "WrongFollow in Ideal, FmpcRes_Trip in real"
+  writeChan z2p $ ("P:2", FmpcP2F_Op $ RAND)
+  -- writeChan z2p $ ("P:2", FmpcP2F_Op $ MULT x y)
+  -- () <- readChan pump; liftIO $ putStrLn "pump"
+  --_xy <- readIORef lastHandle; let Just xy = _xy
+  -- writeChan z2p $ ("P:2", FmpcP2F_MyShare xy)
   
   -- Logs from Observer (a corrupt party)
   () <- readChan pump; liftIO $ putStrLn "pump"
