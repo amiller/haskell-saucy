@@ -319,6 +319,7 @@ protSharingIP (z2p, p2z) (f2p, p2f) = do
               let shrs' = Map.insert j s shrs
               if Map.size shrs' == n then do
                  -- liftIO $ putStrLn $ "Have enough to interpolate input mask"
+                 -- TODO: Robust interpolation
                  let phi :: PolyFq = polyInterp (Map.toList shrs')
                  modifyIORef inputMasks $ Map.insert x (eval phi 0)
                  -- liftIO $ putStrLn $ "Shares:" ++ show shrs'
@@ -356,23 +357,50 @@ protSharingIP (z2p, p2z) (f2p, p2f) = do
             modifyIORef myInpMask $ Map.insert x sr
             return ()
 
+          (pid, SharingPost_Op (OPEN x)) | pid == "InputParty" && isServer -> do
+            -- Fetch our share of this value and post it
+            sx <- readIORef myShares >>= return . (! x)
+            writeChan p2f $ BullRandP2F_Post $ SharingPost_Share x sx
+            () <- readChan chanPostOk
+            return ()
+
           (pid, SharingPost_Input x mr) | pid == "InputParty" && isServer -> do
             -- Read the sr previously stored
             sr <- readIORef myInpMask >>= return . (! x)
 
             -- Store this share
             modifyIORef myShares $ Map.insert x (mr - sr)
+
+            -- Mark the operation as committed and completed
+            modifyIORef virtOps  $ (++ [INPUT x])
+            modifyIORef virtRsps $ (++ [FmpcRes_Ok])
             return ()
 
           (pid, SharingPost_Share x s) -> do
             -- Update the share table
             tbl <- readIORef shareTbl
-            if member x tbl then do
+            if not (member x tbl) then do
               -- Initialize the map
-              undefined
+              modifyIORef shareTbl $ Map.insert x Map.empty
+            else return()
+
+            let j = case pid of "P:1" -> 1
+                                "P:2" -> 2
+                                "P:3" -> 3
+            -- Are there N now? If so, the share is available and we can decode
+            shrs <- readIORef shareTbl >>= return . (! x)
+            let shrs' = Map.insert j s shrs
+            if Map.size shrs' == n then do
+                 -- liftIO $ putStrLn $ "Have enough to interpolate input mask"
+                 -- TODO: Robust interpolation
+                 let phi :: PolyFq = polyInterp (Map.toList shrs')
+
+                 -- Add this to the outputs
+                 modifyIORef virtRsps (++ [FmpcRes_Fq (eval phi 0)])
 
             else return ()
-            -- Are there N now? If so, the share is available
+            modifyIORef shareTbl $ Map.insert x shrs'
+
             return ()
 
           _ -> do
@@ -482,7 +510,7 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
    
   fork $ forever $ do
     (pid,m) <- readChan p2z
-    liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent " ++ show m
+    printEnvIdeal $ "[" ++ pid ++ "] sent " ++ show m
     ?pass
 
   fork $ forever $ do
@@ -493,11 +521,12 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
         -- Store the concrete handles received from corrupt party
         case m of
           OptionalF2P_Through (BullRandF2P_Log log) | pid == "Observer" -> do
-            liftIO $ putStrLn $ "Z: [" ++pid++ "] (corrupt) received log: "
+            printEnvReal $ "[" ++pid++ "] (corrupt) received log: "
+            liftIO $ putStr $ "\ESC[34m"
             forM (fromList log) $ liftIO . putStrLn . show
-            return ()
+            liftIO $ putStr $ "\ESC[0m"
           _ -> do
-            liftIO $ putStrLn $ "Z: [" ++pid++ "] (corrupt) received: " ++ show m
+            printEnvReal $ "[" ++pid++ "] (corrupt) received: " ++ show m
         ?pass
       _ -> error $ "Help!" ++ show mf
       
@@ -534,25 +563,10 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
 
-
   -- Logs from Observer (a corrupt party)
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2P ("Observer", (OptionalP2F_Through BullRandP2F_Read))
 
-{--
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  sendInput $ (FmpcP2F_Op $ INPUTx "Y" 5)
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  sendInput $ (FmpcP2F_Op $ ADD "X" "Y" "Z")
---}
-
-  -- Begin the OPEN phase
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  sendInput $ (FmpcP2F_Op $ OPEN "X")
-
-  -- Deliver the next event (complete the post to bulletin)
-  () <- readChan pump; liftIO $ putStrLn "pump"
-  writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
   
   -- Let all honest parties sync to the log
   () <- readChan pump; liftIO $ putStrLn "pump"
@@ -560,19 +574,47 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2p $ ("P:3", FmpcP2F_Log)
 
-  -- Deliver the next events (all three parties send to IP)
+
+  -- Begin the OPEN phase (interleaved with INPUT, but this is fine)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  sendInput $ (FmpcP2F_Op $ OPEN "X")
+
+  -- Deliver the next event (complete the post to bulletin)
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
+
+  -- Let all honest parties sync to the log
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2p $ ("P:2", FmpcP2F_Log)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2p $ ("P:3", FmpcP2F_Log)
+
+  -- Deliver the next events (all honest parties post their shares)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
+
+  -- Have the adversary post a share and deliver it
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2a $ SttCruptZ2A_A2P $ ("P:1", OptionalP2F_Through $ BullRandP2F_Post $ SharingPost_Share "X" 0)
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
 
   -- Logs from Observer (a corrupt party)
   () <- readChan pump; liftIO $ putStrLn "pump"
-  writeChan z2a $ SttCruptZ2A_A2P ("Observer", (OptionalP2F_Through BullRandP2F_Read))
+  writeChan z2a $ SttCruptZ2A_A2P ("Observer", (OptionalP2F_Through BullRandP2F_Read))  
 
   -- Logs from an honest party
   () <- readChan pump; liftIO $ putStrLn "pump"  
   sendInput $ FmpcP2F_Log
+
+  -- Let all honest parties sync to the log
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2p $ ("P:2", FmpcP2F_Log)
+  () <- readChan pump; liftIO $ putStrLn "pump"
+  writeChan z2p $ ("P:3", FmpcP2F_Log)
+  
 
   () <- readChan pump
   writeChan outp "environment output: 1"

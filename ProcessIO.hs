@@ -66,6 +66,8 @@ secParam = ?secParam
 getTokens :: MonadITM m => m Int
 getTokens = ?getTokens
 
+printEnvIdeal s = liftIO $ putStrLn $ "Z: \ESC[32m" ++ s ++ "\ESC[0m"
+printEnvReal s = liftIO $ putStrLn $ "Z: \ESC[34m" ++ s ++ "\ESC[0m"
 
 {-- Communicating over channels --}
 {-- Haskell-SaUCy processes can make use of the
@@ -528,5 +530,5 @@ testCe1 = runITMinIO 120 $ counterExampleProgram
    (II) In the second example, we look at the possibility of conveying
    secret information to the scheduler via choices.
 
-   TODO
+
 --}
