@@ -387,12 +387,14 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
             () <- readChan chanPostOk
             return ()
 
-          (pid, SharingPost_Input x mr) | pid == "InputParty" && isServer -> do
-            -- Read the sr previously stored
-            sr <- readIORef myInpMask >>= return . (! x)
+          (pid, SharingPost_Input x mr) | pid == "InputParty" -> do
+            if isServer then do
+              -- Read the sr previously stored
+              sr <- readIORef myInpMask >>= return . (! x)
 
-            -- Store this share
-            storeMyShare x (mr - sr)
+              -- Store this share
+              storeMyShare x (mr - sr)
+            else return ()
 
             -- Mark the operation as committed and completed
             modifyIORef virtOps  $ (++ [INPUT x])
@@ -414,11 +416,12 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
             shrs <- readIORef shareTbl >>= return . (! x)
             let shrs' = Map.insert j s shrs
             if Map.size shrs' == n then do
-                 -- liftIO $ putStrLn $ "Have enough to interpolate input mask"
+                 liftIO $ putStrLn $ "Have enough to interpolate opening"
                  -- TODO: Robust interpolation
                  let phi :: PolyFq = polyInterp (Map.toList shrs')
 
                  -- Add this to the outputs
+                 modifyIORef virtOps  (++ [OPEN x])
                  modifyIORef virtRsps (++ [FmpcRes_Fq (eval phi 0)])
 
             else return ()
@@ -805,6 +808,7 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
            -- the environment may have seen thus far.
            -- TODO loop over each honest party
            printAdv $ "Starting equivocation"
+          {--
            shrs <- forM [(j, "P:"++show j) | j <- [2.. 3]] $ \(j,pj) -> do
                s <- readIORef (sbxShares ! pj) >>= return . (! x)
                return (j, s)
@@ -814,7 +818,7 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
            printAdv "Equivocating shares!"
            forM [(j, "P:"++show j) | j <- [2.. 3]] $ \(j,pj) -> do
                modifyIORef (sbxShares ! pj) $ Map.insert x (eval phi j)
-
+             --}
            writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUTx x 0)))
            mf <- readChan sbxp2z
            let ("InputParty", FmpcF2P_Ok) = mf
