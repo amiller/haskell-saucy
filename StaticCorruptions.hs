@@ -112,14 +112,21 @@ runEnvironment passer sidcrupt (p2z, z2p) (a2z, z2a) (f2z, z2f) z = do
 
 
 {- UC Experiments -}
-execUC
-  :: MonadITM m =>
+execUC :: MonadITM m =>
        (forall m. MonadEnvironment m => Environment p2z z2p a2z z2a f2z z2f outz m)
        -> (forall m. MonadProtocol m => Protocol z2p p2z f2p p2f m)
        -> (forall m. MonadFunctionality m => Functionality p2f f2p a2f f2a z2f f2z m)
        -> (forall m. MonadAdversary m => Adversary z2a a2z f2p p2f f2a a2f m)
        -> m outz
-execUC z p f a = do
+execUC = execUC_
+
+execUC_ :: MonadITM m =>
+          (Environment p2z z2p a2z z2a f2z z2f outz m)
+       -> (Protocol z2p p2z f2p p2f m)
+       -> (Functionality p2f f2p a2f f2a z2f f2z m)
+       -> (Adversary z2a a2z f2p p2f f2a a2f m)
+       -> m outz
+execUC_ z p f a = do
   {- 
     UC communication layout
 
