@@ -65,7 +65,7 @@ data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
                 | FmpcF2P_Log [(FmpcOp sh)] [(FmpcRes sh)]
                 | FmpcF2P_Ok    deriving (Show, Functor)
 
-data FmpcLeak sh = FmpcLeak_Op (FmpcOp sh)
+data FmpcLeak sh = FmpcLeak_Op (FmpcOp sh) | FmpcLeak_Log PID deriving Show
 
 type MonadMPC_F m = (MonadFunctionality m,
                      ?n :: Int,
@@ -107,6 +107,7 @@ fMPC (p2f, f2p) (_,_) (_,_) = do
    case m of
     -- Anyone can see the log
     FmpcP2F_Log -> do
+       leak $ FmpcLeak_Log pid
        log <- readIORef ops
        rsp <- readIORef rsps
        writeChan f2p (pid, FmpcF2P_Log log rsp)
@@ -189,8 +190,12 @@ data BullRandF2P a = BullRandF2P_PostOk | BullRandF2P_Log [(PID, a)] | BullRandF
 data BullRandLeak a = BullRandLeak_Post PID a | BullRandLeak_p2inp PID Sh | BullRandLeak_Opt PID
  deriving Show
 
-fBullRand :: (MonadLeak m (BullRandLeak a), MonadOptionally m) => Functionality (BullRandP2F a) (BullRandF2P a) Void Void Void Void m
-fBullRand (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
+fBullRand (p2f,f2p) (a2f,f2a) (z2f,f2z) = do
+  tblPreprocRand <- newIORef []
+  fBullRand_ tblPreprocRand (p2f,f2p) (a2f,f2a) (z2f,f2z)
+
+fBullRand_ :: (Show a,MonadLeak m (BullRandLeak a), MonadOptionally m) => IORef [PolyFq] -> Functionality (BullRandP2F a) (BullRandF2P a) Void Void Void Void m
+fBullRand_ tblPreprocRand (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   -- Writes: best effort availability (uses optionally)
   -- Reads:  available to every party immediately
   --         consistent views are guaranteed
@@ -203,8 +208,8 @@ fBullRand (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   
   log <- newIORef []  -- empty log
 
-  randTbl <- newIORef []
-  randCtrs <- newIORef $ Map.fromList initCtrs -- Maps PID to 
+  randTbl <- newIORef ([] :: [PolyFq])   -- List of polynomials
+  randCtrs <- newIORef $ Map.fromList initCtrs -- Maps PID to index of next poly to access
 
   fork $ forever $ do
     (pid, mx) <- readChan p2f
@@ -213,6 +218,7 @@ fBullRand (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
       
       BullRandP2F_Post m -> do
         -- Optionally add this to the log
+        liftIO $ putStrLn $ "fBullRand:" ++ show mx
         leak $ BullRandLeak_Post pid m
         optionally $ do
             -- liftIO $ putStrLn $ "Posting in the bulletin board"
@@ -577,8 +583,9 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Begin the OPEN phase (interleaved with INPUT, but this is fine)
   () <- readChan pump; liftIO $ putStrLn "pump"
+  liftIO $ putStrLn $ "about to post open"
   sendInput $ (FmpcP2F_Op $ OPEN "X")
-
+  
   -- Deliver the next event (complete the post to bulletin)
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2a $ SttCruptZ2A_A2F $ OptionalA2F_Deliver 0
@@ -628,3 +635,182 @@ runMPCFunc n t f = let ?n = n; ?t = t in f
 
 
 testMpc1Real = runITMinIO 120 $ execUC envTestMPC (runOptLeakP protSharingIP) (runOptLeak $ fBullRand) dummyAdversary
+
+
+
+{---
+ 
+ ---}
+simSharing :: MonadAdversary m => Adversary (SttCruptZ2A (OptionalP2F (BullRandP2F SharingPost)) (OptionalA2F (LeakA2F Void))) (SttCruptA2Z (OptionalF2P (BullRandF2P SharingPost)) (OptionalF2A (LeakF2A (BullRandLeak SharingPost) Void))) (OptionalF2P (FmpcF2P Sh)) (OptionalP2F (FmpcP2F Sh)) (OptionalF2A (LeakF2A (FmpcLeak Sh) Void)) (OptionalA2F (LeakA2F Void)) m
+simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
+  
+  -- Number of parties, tolerance parameter encoded in SID
+  let (n :: Int, t :: Int, ssid :: String) = readNote "protSharingIP" $ snd ?sid
+  
+  let isCruptIP = member "InputParty" ?crupt 
+
+  {--
+   The main strategy is that the simulator will maintain a local sandbox execution of
+         a real UC experiment that's kept in the same configuration as the ideal world.
+   The environment/dummyAdversary interface is routed directly to this virtualized execution.
+
+   Whenever an honest party in this simulation outputs a value, we'll need to activate the
+     ideal functionality to cause the same event to happen through the dummy protocol.
+
+   In the honest IP case:
+      We will need to extract the input value. When a simulated honest party outputs INPUT "X",
+            we need to pass INPUT "X" s to the ideal functionality.
+         
+      We can do this by reading from the simulated preprocessing table.
+
+   In the Corrupt IP case:
+      We need to equivocate. We'll have to show Z preprocessing values for corrupt parties
+           prior to learning the secret s. Later when s is revealed, we'll have to disclose
+           the entire preprocessing polynomial and it needs to be consistent.
+
+      We can do this by modifying the preprocessing table to incorporate new information
+           as we receive it from the ideal functionality.
+           The `t` random values we initially disclose will come from fBullRand's sampled
+           polynomial, but we'll update it when we learn `s`.
+  --}
+
+  sbxTblPreprocRand <- newIORef []
+  let sbxBullRand () = fBullRand_ sbxTblPreprocRand
+
+  -- Routing z2a <-->  
+  sbxpump <- newChan
+  sbxz2p <- newChan   -- writeable by host
+  sbxp2z <- newChan   -- readable by host
+  let sbxEnv z2exec (p2z',z2p') (a2z',z2a') _ pump' outp' = do
+        -- Copy the SID and corruptions
+        writeChan z2exec $ SttCrupt_SidCrupt ?sid ?crupt
+
+        -- Expose wrappers for the p2z interactions.
+        forward p2z' sbxp2z
+        forward sbxz2p z2p'
+
+        -- Forward messages from environment to host, into the sandbox dummy adv
+        forward z2a z2a'
+        forward a2z' a2z
+
+        -- When the sandbox receives on pump', pass control back to the host
+        forward pump' sbxpump
+
+        return ()
+
+  chanLog <- newChan
+  fork $ forever $ do
+    (pid, mf) <- readChan p2a
+    case mf of
+      OptionalF2P_Deliver -> undefined
+      OptionalF2P_Through FmpcF2P_Ok -> undefined
+      OptionalF2P_Through (FmpcF2P_Log ops rsps) -> do
+          writeChan chanLog $ FmpcF2P_Log ops rsps
+      _ -> do
+        liftIO $ putStrLn "receive from ideal"
+        error "receive from ideal"
+
+  let handleLeak m = do
+      case m of
+       (_, FmpcLeak_Op (INPUT x)) -> do
+         if isCruptIP then
+           return ()
+         else do
+           -- We've learned the next operation will be an input, but we can't extract yet.
+           -- Need to initiate the sandbox simulation with an arbitrary input
+           writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUTx x 0)))
+           mf <- readChan sbxp2z
+           let ("InputParty", FmpcF2P_Ok) = mf
+           return ()
+
+       (_, FmpcLeak_Log pid) -> do
+           if not (member pid ?crupt) then do
+              -- liftIO $ putStrLn $ "honest FmpcLeak_Log"
+              writeChan sbxz2p (pid,  FmpcP2F_Log)
+              mf <- readChan sbxp2z
+              let (_, FmpcF2P_Ok) = mf
+              return ()
+           else
+              return ()
+           return ()
+
+       _ -> error "hmm"
+
+  -- Only process the new bulletin board entries since last time
+  leakCtr <- newIORef 0
+  let syncLeaks () = do
+        writeChan a2f $ OptionalA2F_Through $ LeakA2F_Get
+        mf <- readChan f2a
+        let OptionalF2A_Through (LeakF2A_Leaks leaks) = mf
+        printAdv $ "Leaks: " ++ show leaks
+        -- Only process the new elements
+        t <- readIORef leakCtr
+        let tail = drop t leaks
+        modifyIORef leakCtr (+ length tail)
+        forM (fromList tail) $ handleLeak
+        return  ()
+
+  -- Only process the new items since last time
+  let handleItem item = do
+      printAdv $ "Handle Item: " ++ show item
+      undefined
+      return ()
+
+  opsCtr <- newIORef 0
+  rspsCtr <- newIORef 0
+  let syncLog () = do
+      -- TODO: pick one of the corrupt parties
+      printAdv $ "SyncLog: "
+      writeChan a2p $ ("P:1", OptionalP2F_Through $ FmpcP2F_Log)
+      -- Read the log from log channel
+      log <- readChan chanLog
+      let (FmpcF2P_Log ops rsps) = log
+      -- Only process the new elements
+      t <- readIORef opsCtr
+      let tail = drop t ops
+      modifyIORef opsCtr (+ length tail)
+      forM (fromList tail) $ handleItem
+      return  ()
+
+  let sbxAdv (z2a',a2z') (p2a',a2p') (f2a',a2f') = do
+        -- The sandbox adversary poses as the dummy adversary, but takes every
+        -- activation opportunity to synchronize with the ideal world functionality
+        fork $ forever $ do
+          mf <- readChan z2a'
+          printAdv $ show "Intercepted z2a'" ++ show mf
+          syncLeaks ()
+          syncLog ()
+          printAdv $ "SyncLeaks Done"
+          case mf of
+            SttCruptZ2A_A2F f -> writeChan a2f' f
+            SttCruptZ2A_A2P pm -> writeChan a2p' pm
+        fork $ forever $ do
+          m <- readChan f2a'
+          liftIO $ putStrLn $ show "f2a'"
+          writeChan a2z' $ SttCruptA2Z_F2A m
+        fork $ forever $ do
+          (pid,m) <- readChan p2a'
+          liftIO $ putStrLn $ show "p2a'"
+          writeChan a2z' $ SttCruptA2Z_P2A (pid, m)
+        return ()
+
+
+  -- We need to wait for the write token before we can finish initalizing the
+  -- sandbox simulation.
+  mf <- selectRead z2a f2a   -- TODO: could there be a P2A here?
+
+  fork $ execUC sbxEnv (runOptLeakP protSharingIP) (runOptLeak (sbxBullRand ())) sbxAdv
+  () <- readChan sbxpump
+
+  -- After initializing, the sbxAdv is now listening on z2a,f2a,p2a. So this passes to those
+  case mf of
+    Left m -> writeChan z2a m
+    Right m -> writeChan f2a m
+      
+  fork $ forever $ do
+      () <- readChan sbxpump
+      undefined
+      return ()
+  return ()
+
+testMpc1Ideal = runITMinIO 120 $ execUC envTestMPC (runOptLeakP idealProtocol) (runOptLeak $ runMPCFunc 3 1 fMPC) simSharing

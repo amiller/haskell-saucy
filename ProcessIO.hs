@@ -66,6 +66,7 @@ secParam = ?secParam
 getTokens :: MonadITM m => m Int
 getTokens = ?getTokens
 
+printAdv s = liftIO $ putStrLn $ "A: \ESC[31m" ++ s ++ "\ESC[0m"
 printEnvIdeal s = liftIO $ putStrLn $ "Z: \ESC[32m" ++ s ++ "\ESC[0m"
 printEnvReal s = liftIO $ putStrLn $ "Z: \ESC[34m" ++ s ++ "\ESC[0m"
 
@@ -80,6 +81,9 @@ wrapWrite f c = do
   d <- newChan 
   fork $ forever $ readChan d >>= writeChan c . f 
   return d
+
+forward cin cout = do
+  fork $ forever $ readChan cin >>= writeChan cout
 
 wrapRead f c = do
   d <- newChan
