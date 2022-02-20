@@ -154,6 +154,7 @@ fMPC (p2f, f2p) (_,_) (_,_) = do
     --  it waits for the input to be provided next
     FmpcP2F_Op op@(INPUT x) | not isPending -> do
        leak $ FmpcLeak_Op op
+       appendOp op
        writeIORef fInputWaiting $ Just x
        writeChan f2p $ (pid, FmpcF2P_Ok)
 
@@ -166,12 +167,13 @@ fMPC (p2f, f2p) (_,_) (_,_) = do
          modifyIORef shareTbl $ Map.insert x s
          appendResp FmpcRes_Ok
          ?pass
+       writeChan f2p (pid, FmpcF2P_Ok)
 
     -- Otherwise if an operation is already pending, reject this activation
-    FmpcP2F_Op _ | isPending || pid /= "InputParty" ->
+    FmpcP2F_Op _ | isPending ->
        writeChan f2p (pid, FmpcF2P_Nack)
     
-    FmpcP2F_Op op | pid == "InputParty" -> do
+    FmpcP2F_Op op | not isPending -> do
        -- (I)   Leak the next operation                             
        case op of
           OPEN x -> do
@@ -329,10 +331,10 @@ protSharingIP (z2p, p2z) (f2p, p2f) = do
   protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f)
 
 
--- This is the "View Client" portion of the protocol.
+-- This is the "Read Only View Client" portion of the protocol.
 -- It translates logs from the real world bulletin board fBullRand,
---  into logs from the 
--- It's by nature "Read Only," and t
+--  into logs apparently from fMPC.
+-- 
 -- makeObserver :: MonadITM m => Int -> Int -> IORef (Map Sh (Map Fq Fq)) -> IORef [FmpcOp Sh] -> IORef [FmpcRes Sh] -> m ((PID, SharingPost) -> m ())
 makeObserver n t shareTbl virtOps virtRsps = do
 
@@ -421,9 +423,6 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
   chanLog <- newChan  
   chanPostOk <- newChan
 
-  -- State machine flag to keep track of whether the bulletin board reflects a pending state
-  isPending <- newIORef False
-
   fork $ forever $ do
     mf <- readChan f2p
     case mf of
@@ -470,13 +469,13 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
         rsps' <- readIORef virtRsps
         return (length ops' > length rsps')
 
-  handleSandbox <- makeObserver n t shareTbl virtOps virtRsps
-  syncSandbox <- makeSyncLog handleSandbox $ do
+  handleObserver <- makeObserver n t shareTbl virtOps virtRsps
+  syncObserver <- makeSyncLog handleObserver $ do
       writeChan p2f BullRandP2F_Read
       readChan chanLog
 
-  -- Process one bulletin board item at a time
-  let handleLogInputParty item = do
+  -- Process one bulletin board item at a time, responding
+  let handleLogActive item = do
 
         -- liftIO $ putStrLn $ "Handling log: " ++ show item
         case item of
@@ -542,7 +541,7 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
             return ()
 
   -- Only process the new bulletin board entries since last time
-  syncInputParty <- makeSyncLog handleLogInputParty $ do
+  syncActive <- makeSyncLog handleLogActive $ do
       writeChan p2f BullRandP2F_Read
       readChan chanLog
 
@@ -568,7 +567,7 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
   fork $ forever $ do
     mf <- readChan z2p
 
-    syncSandbox
+    syncObserver
     isPending <- hasOperationPending
     isInputWaiting <- readIORef fInputWaiting
 
@@ -600,22 +599,18 @@ protSharingIP_ getMyShare storeMyShare (z2p, p2z) (f2p, p2f) = do
            ?pass
 
         writeChan p2z $ FmpcF2P_Ok
-        
 
       FmpcP2F_Op op | ?pid == "InputParty" -> do
-        syncSandbox
         writeChan p2f $ BullRandP2F_Post $ SharingPost_Op (op)
         () <- readChan chanPostOk
         writeChan p2z $ FmpcF2P_Ok
-        
 
       FmpcP2F_Sync | isServer -> do
-        syncSandbox
-        syncInputParty
+        -- Sync instructions will cause servers to respond
+        syncActive
         writeChan p2z $ FmpcF2P_Ok
 
       FmpcP2F_Log -> do
-        syncSandbox
         -- Return the synchronized log...
         ops <- readIORef virtOps
         rsps <- readIORef virtRsps
@@ -658,7 +653,8 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     mf <- readChan a2z
     case mf of
-      SttCruptA2Z_F2A (OptionalF2A_Pass) -> ?pass
+      SttCruptA2Z_F2A (OptionalF2A_Pass) -> do
+        ?pass
       SttCruptA2Z_P2A (pid, m) -> do
         -- Store the concrete handles received from corrupt party
         case m of
@@ -720,8 +716,7 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump; liftIO $ putStrLn "pump"
   writeChan z2p $ ("P:3", FmpcP2F_Log)
 
-
-  -- Begin the OPEN phase (interleaved with INPUT, but this is fine)
+  -- Begin the OPEN phase
   () <- readChan pump; liftIO $ putStrLn "pump"
   liftIO $ putStrLn $ "about to post open"
   sendInput $ (FmpcP2F_Op $ OPEN "X")
@@ -856,6 +851,24 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   let storeMyShare x s = modifyIORef (sbxShares ! ?pid) $ Map.insert x s
   let sbxProt () = protSharingIP_ getMyShare storeMyShare
 
+  {-- The simulator will run a sandbox emulation. The observer code can be reused --}
+  -- Flag about waiting for INPUTx based
+  fInputWaiting <- newIORef Nothing
+
+  -- Maintain a virtual log of completed operations (to emulate Fmpc)
+  virtOps <- newIORef []
+  virtRsps <- newIORef []
+
+  -- Returns READY if all pending ops are complete
+  let hasOperationPending = do
+        ops' <- readIORef virtOps
+        rsps' <- readIORef virtRsps
+        return (length ops' > length rsps')
+
+  obsShareTbl <- newIORef (Map.empty :: Map Sh (Map Fq Fq))
+  handleObserver <- makeObserver n t obsShareTbl virtOps virtRsps
+  syncObserver <- makeSyncLog handleObserver $ readIORef sbxLog
+
   chanLog <- newChan
   fork $ forever $ do
     (pid, mf) <- readChan p2a
@@ -875,10 +888,7 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
             if not isCruptIP then do
                -- In the sandbox, the dummy adversary is ready. We should commit this op
                -- in the ideal world
-               writeChan a2f $ OptionalA2F_Deliver 0 -- First to commit
-               mf <- readChan f2a
-               let OptionalF2A_Pass = mf
-               writeChan a2f $ OptionalA2F_Deliver 0 -- Then to log response
+               writeChan a2f $ OptionalA2F_Deliver 0 -- Commit the result
                mf <- readChan f2a
                let OptionalF2A_Pass = mf
 
@@ -894,33 +904,41 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
             else return ()
           (pid, SharingPost_Share x s) -> return ()
 
+          _ -> liftIO $ putStrLn $ show item
+
   let handleOpItem item = do
       return ()
   let handleRspItem item = do
       return ()
   
   let handleLeak m = do
+      syncObserver
+      isPending <- hasOperationPending
+      isInputWaiting <- readIORef fInputWaiting
+
       case m of
-       (_, FmpcLeak_Op (INPUT x)) -> do
+       (_, FmpcLeak_Op (INPUT x)) | isInputWaiting == Nothing -> do
          if isCruptIP then
            return ()
          else do
-           -- We've learned an input was submitted, but it hasn't been committed yet
-           -- Need to initiate the sandbox simulation with an arbitrary input
-           writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUTx x 0)))
+           -- We've learned an input was submitted, but it hasn't been committed yet.
+           -- We initiate the input operation in the sandbox
+           writeIORef fInputWaiting (Just x)
+           writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUT x)))
            mf <- readChan sbxp2z
            let ("InputParty", FmpcF2P_Ok) = mf
            return ()
 
-       (_, FmpcLeak_Op (OPEN x)) -> do
-           -- We learned the next operation will be an input, but we can't extract yet.
+       (_, FmpcLeak_Op (INPUT x)) | isInputWaiting == Just x -> do
          if isCruptIP then
            return ()
          else do
-           liftIO $ putStrLn $ "The OPEN operation is leaked"
-           writeChan sbxz2p ("InputParty", (FmpcP2F_Op (OPEN x)))
+           -- We've learned an input was committed.
+           -- Need to initiate the sandbox with an arbitrary input
+           writeIORef fInputWaiting Nothing
+           writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUTx x 0)))
            mf <- readChan sbxp2z
-           let (_, FmpcF2P_Ok) = mf
+           let ("InputParty", FmpcF2P_Ok) = mf
            return ()
 
        (_, FmpcLeak_Open x s) -> do
@@ -932,7 +950,7 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
            -- the environment may have seen thus far.
            -- TODO loop over each honest party
            printAdv $ "Starting equivocation"
-          {--
+           {--
            shrs <- forM [(j, "P:"++show j) | j <- [2.. 3]] $ \(j,pj) -> do
                s <- readIORef (sbxShares ! pj) >>= return . (! x)
                return (j, s)
@@ -943,15 +961,15 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
            forM [(j, "P:"++show j) | j <- [2.. 3]] $ \(j,pj) -> do
                modifyIORef (sbxShares ! pj) $ Map.insert x (eval phi j)
              --}
-           writeChan sbxz2p ("InputParty",  (FmpcP2F_Op (INPUTx x 0)))
+           writeChan sbxz2p ("InputParty", (FmpcP2F_Op (OPEN x)))
            mf <- readChan sbxp2z
-           let ("InputParty", FmpcF2P_Ok) = mf
+           let (_, FmpcF2P_Ok) = mf
            return ()
 
        (_, FmpcLeak_Sync pid) -> do
            if not (member pid ?crupt) then do
-              -- liftIO $ putStrLn $ "honest FmpcLeak_Log"
-              writeChan sbxz2p (pid,  FmpcP2F_Log)
+              printAdv "honest FmpcLeak_Sync"
+              writeChan sbxz2p (pid,  FmpcP2F_Sync)
               mf <- readChan sbxp2z
               let (_, FmpcF2P_Ok) = mf
               return ()
@@ -988,14 +1006,15 @@ simSharing (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
         -- activation opportunity to synchronize with the ideal world functionality
         fork $ forever $ do
           mf <- readChan z2a'
-          -- printAdv $ show "Intercepted z2a'" ++ show mf
-          syncLeaks; syncOps; syncRsps; syncLog
+          printAdv $ show "Intercepted z2a'" ++ show mf
+          syncObserver; syncLeaks; syncOps; syncRsps; syncLog
+          printAdv $ "forwarding into to sandbox"
           case mf of
             SttCruptZ2A_A2F f -> writeChan a2f' f
             SttCruptZ2A_A2P pm -> writeChan a2p' pm
         fork $ forever $ do
           m <- readChan f2a'
-          liftIO $ putStrLn $ show "f2a'"
+          liftIO $ putStrLn $ show "f2a'" ++ show m
           writeChan a2z' $ SttCruptA2Z_F2A m
         fork $ forever $ do
           (pid,m) <- readChan p2a'
