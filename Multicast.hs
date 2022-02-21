@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, ImplicitParams #-} 
+{-# LANGUAGE PartialTypeSignatures #-}
 
 module Multicast where
 
@@ -54,8 +55,8 @@ fMulticast (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
 
 {-- An !fAuth hybrid protocol realizing fMulticast --}
-protMulticast :: MonadProtocol m =>
-     Protocol t (MulticastF2P t) (SID, FAuthF2P t) (SID, t) m
+protMulticast :: MonadAsyncP m =>
+     Protocol (ClockP2F t) (MulticastF2P t) (SID, FAuthF2P t) (SID, t) m
 protMulticast (z2p, p2z) (f2p, p2f) = do
   -- Sender and set of parties is encoded in SID
   let sid = ?sid :: SID
@@ -67,16 +68,17 @@ protMulticast (z2p, p2z) (f2p, p2f) = do
   -- Only activated by the designated sender
   fork $ forever $ do
     m <- readChan z2p
-    if pid == pidS then do
-        liftIO $ putStrLn $ "protMulticast: PARTIES " ++ show parties
-        forMseq_ parties $ \pidR -> do
+    case m of
+      ClockP2F_Through m | pid == pidS -> do
+         liftIO $ putStrLn $ "protMulticast: PARTIES " ++ show parties
+         forMseq_ parties $ \pidR -> do
           -- Send m to each party, through a separate functionality
           let ssid' = ("", show (pid, pidR, ""))
           writeChan p2f (ssid', m)
           readChan cOK
-        writeChan p2z MulticastF2P_OK
-
-    else error "multicast activated not by sender"
+         writeChan p2z MulticastF2P_OK
+      ClockP2F_Pass -> ?pass
+      _ -> error "multicast activated not by sender"
 
   -- Messages send from other parties are relayed here
   fork $ forever $ do
@@ -106,7 +108,9 @@ simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
     case mf of
       -- TODO: For corrupted parties, the simulator translates "FAuthP2F_Msg m" messages intended for !fAuth (real world) into "MulticastA2F deliver" messages
       -- This requires tedious programming to get right, I wish we could just search for it!
-      SttCruptZ2A_A2P (pid, m) -> do 
+      SttCruptZ2A_A2P (pid, ClockP2F_Pass) -> do
+        writeChan a2p (pid, ClockP2F_Pass)
+      SttCruptZ2A_A2P (pid, ClockP2F_Through m) -> do 
         let _s :: SID = fst m
         let _m :: String = snd m
         writeChan a2f $ Right $ MulticastA2F_Deliver pid _m 
@@ -133,7 +137,7 @@ simMulticast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
 testVEnv
   :: MonadEnvironment m =>
-     Environment (MulticastF2P String) String (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void))) (SttCruptZ2A (SID, String) (Either ClockA2F (SID, Void))) Void ClockZ2F String m
+     Environment (MulticastF2P String) (ClockP2F String) (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void))) (SttCruptZ2A (ClockP2F (SID, String)) (Either ClockA2F (SID, Void))) Void ClockZ2F String m
 testVEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let extendRight conf = show ("", conf)
   let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob", "Charlie"], ""))
@@ -154,19 +158,25 @@ testVEnv z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Have Alice write a message
   () <- readChan pump 
-  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", (sid, "I'm Alice"))
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", ClockP2F_Through (sid, "I'm Alice"))
 
   () <- readChan pump
-  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", (sid, "You're not Alice"))
-  writeChan z2a $ SttCruptZ2A_A2P $ ("Charlie", (sid, "You're not Alice"))
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Bob", ClockP2F_Through (sid, "You're not Alice"))
+  () <- readChan pump  
+  writeChan z2a $ SttCruptZ2A_A2P $ ("Charlie", ClockP2F_Through (sid, "You're not Alice"))
 
   () <- readChan pump
   writeChan outp "1"
-  
+
+
+
 
 testEnvMulticast
-  :: MonadEnvironment m =>
-     Environment (MulticastF2P String) String (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void))) (SttCruptZ2A (SID, String) (Either ClockA2F (SID, Void))) Void ClockZ2F String m
+  :: (MonadEnvironment m) =>
+     Environment (MulticastF2P String) (ClockP2F String)
+           (SttCruptA2Z (SID, FAuthF2P String) (Either (ClockF2A (SID, String)) (SID, Void)))
+           (SttCruptZ2A (ClockP2F (SID, String)) (Either ClockA2F (SID, Void))) Void
+            ClockZ2F String m
 testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let extendRight conf = show ("", conf)
   let sid = ("sidTestMulticast", show ("Alice", ["Alice", "Bob"], ""))
@@ -186,7 +196,7 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Have Alice write a message
   () <- readChan pump 
-  writeChan z2p ("Alice", "I'm Alice")
+  writeChan z2p ("Alice", ClockP2F_Through  "I'm Alice")
 
   -- Let the adversary see
   () <- readChan pump 
@@ -214,11 +224,11 @@ testEnvMulticast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   () <- readChan pump 
   writeChan outp "environment output: 1"
 
+
 testMulticastReal :: IO String
-testMulticastReal = runITMinIO 120 $ execUC testEnvMulticast (protMulticast) (runAsyncF $ bangFAsync $ fAuth) dummyAdversary
+testMulticastReal = runITMinIO 120 $ execUC testEnvMulticast (runAsyncP protMulticast) (runAsyncF $ bangFAsync $ fAuth) dummyAdversary
+
 
 testMulticastIdeal :: IO String
 testMulticastIdeal = runITMinIO 120 $ execUC testEnvMulticast (idealProtocol) (runAsyncF fMulticast) simMulticast
 
-testNewMulticast :: IO String
-testNewMulticast = runITMinIO 120 $ execUC testVEnv (idealProtocol) (runAsyncF fMulticast) simMulticast

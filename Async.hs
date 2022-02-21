@@ -55,8 +55,11 @@ type Round = Int
 
 {-- Types of messages exchanged with the clock --}
 data ClockA2F = ClockA2F_GetCount | ClockA2F_Deliver Int | ClockA2F_GetLeaks deriving Show
-data ClockF2A l = ClockF2A_Count Int | ClockF2A_Leaks [l] deriving Show
+data ClockF2A l = ClockF2A_Pass | ClockF2A_Count Int | ClockF2A_Leaks [l] deriving Show
 data ClockZ2F = ClockZ2F_MakeProgress deriving Show
+data ClockP2F a = ClockP2F_Pass | ClockP2F_Through a deriving Show
+
+
 
 {-- Implementation of MonadAsync --}
 
@@ -64,7 +67,7 @@ deleteNth i xs = l ++ r where (l,(_:r)) = splitAt i xs
 
 runAsyncF :: MonadFunctionality m =>
              (MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m)
-          -> Functionality p2f f2p (Either ClockA2F a2f) (Either (ClockF2A l) f2a) ClockZ2F Void m
+          -> Functionality (ClockP2F p2f) f2p (Either ClockA2F a2f) (Either (ClockF2A l) f2a) ClockZ2F Void m
 runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
 
   -- Store state for the leakage buffer
@@ -81,6 +84,14 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
   a2f' <- newChan
   f2a' <- wrapWrite Right f2a 
   z2f' <- newChan
+
+  -- Allow protocols to pass
+  p2f' <- newChan
+  fork $ forever $ do
+    mf <- readChan p2f
+    case mf of
+        (_, ClockP2F_Pass) -> writeChan f2a $ Left ClockF2A_Pass
+        (pid, ClockP2F_Through m) -> writeChan p2f' (pid, m)
 
   -- Adversary can query the current state, and deliver messages early
   fork $ forever $ do
@@ -120,7 +131,7 @@ runAsyncF f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     else error "underflow"
 
   let ?eventually = _eventually; ?leak = _leak in
-    f (p2f, f2p) (a2f', f2a') (z2f', f2z)
+    f (p2f', f2p) (a2f', f2a') (z2f', f2z)
   return ()
 
 
@@ -181,7 +192,7 @@ testEnvAuthAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   -- Have Alice write a message
   () <- readChan pump 
-  writeChan z2p ("Alice", ("hi Bob"))
+  writeChan z2p ("Alice", ClockP2F_Through ("hi Bob"))
 
   -- Let the adversary see 
   () <- readChan pump 
@@ -207,14 +218,23 @@ testAuthAsync = runITMinIO 120 $ execUC testEnvAuthAsync (idealProtocol) (runAsy
 {- runAsyncF !F vs !(runAsyncF F) -}
 {----------------------------------}
 {-
-   While it's possible to compose async and bang directly with
-   bangF (runAsyncF F), this isn't generally what we want.
-   In particular, the JUC theorem (see Multisession.hs) does not
-   hold in general.
+   There are two approaches to compose async and bang. Regardless of which we choose,
+   we have to handle updating the session ID, since "leak" doesn't normally include it.
+
+   (Option 1):    bangF (runAsyncF F)
+         this isn't generally what we want, since we think there being a single
+         queue of scheduled tasks and a single queue of leaks
+   (Option 2):    runAsyncF (bangF)
+         However, the generalized version of theories like JUC don't automatically follow,
+         so the following is new and must be proven.
+           async(F) --p-> async(!F)
+           async(F) --q-> async(G)
+           --------------------------------
+           async(F) --!q.p-> async(!G)
  -}
 
-_bangFAsync :: MonadFunctionality m => Chan (SID, l) -> Chan (Chan (), Chan ()) -> (forall m. MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m) ->  Functionality p2f f2p a2f f2a Void Void m
-_bangFAsync _leak _eventually f = f
+_bangFAsyncInstance :: MonadFunctionality m => Chan (SID, l) -> Chan (Chan (), Chan ()) -> (forall m. MonadFunctionalityAsync m l => Functionality p2f f2p a2f f2a Void Void m) ->  Functionality p2f f2p a2f f2a Void Void m
+_bangFAsyncInstance _leak _eventually f = f
   where
     ?leak = \l -> writeChan _leak (?sid, l)
     ?eventually = \m -> do
@@ -243,7 +263,7 @@ bangFAsync f (p2f, f2p) (a2f, f2a) (z2f, f2z) = do
     l <- readChan _leak
     leak l
 
-  bangF (_bangFAsync _leak _eventually f) (p2f, f2p) (a2f, f2a) (z2f, f2z)
+  bangF (_bangFAsyncInstance _leak _eventually f) (p2f, f2p) (a2f, f2a) (z2f, f2z)
 
 
 
@@ -265,7 +285,7 @@ testEnvAsyncBang z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   -- Have Alice write a message
   () <- readChan pump
   let ssid1 = ("ssidX", show ("Alice","Bob",""))
-  writeChan z2p ("Alice", (ssid1, "hi Bob"))
+  writeChan z2p ("Alice", ClockP2F_Through (ssid1, "hi Bob"))
 
   -- Let the adversary read the buffer
   () <- readChan pump 
@@ -322,3 +342,18 @@ testEnvBangAsync z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 testBangAsync :: IO String
 testBangAsync = runITMinIO 120 $ execUC testEnvBangAsync (idealProtocol) (bangF $ runAsyncF fAuth) dummyAdversary
 --}
+
+
+
+type MonadAsyncP m = (MonadProtocol m,
+                           ?pass :: m ())
+runAsyncP :: MonadProtocol m =>
+  (MonadAsyncP m => Protocol z2p p2z f2p p2f m) ->
+     Protocol z2p p2z f2p (ClockP2F p2f) m
+runAsyncP prot (z2p, p2z) (f2p, p2f) = do
+  let pass = do
+        writeChan p2f ClockP2F_Pass
+  p2f' <- wrapWrite ClockP2F_Through p2f
+  let ?pass = pass in
+     prot (z2p, p2z) (f2p,p2f')
+        
