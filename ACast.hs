@@ -16,6 +16,7 @@ import Control.Monad (forever, forM)
 import Control.Monad.Loops (whileM_)
 import Data.IORef.MonadIO
 import Data.Map.Strict (Map)
+import Data.List (elemIndex, delete)
 import qualified Data.Map.Strict as Map
 
 {- fACast: an asynchronous broadcast functionality, Bracha's Broadcast -}
@@ -25,7 +26,7 @@ import qualified Data.Map.Strict as Map
 
 
 data ACastP2F a = ACastP2F_Input a deriving Show
-data ACastF2P a = ACastF2P_OK | ACastF2P_Deliver a deriving Show
+data ACastF2P a = ACastF2P_OK | ACastF2P_Deliver a deriving (Show, Eq)
 --data ACastA2F a = ACastA2F_Deliver PID deriving Show
 
 
@@ -161,7 +162,6 @@ protACast (z2p, p2z) (f2p, p2f) = do
           require (pid' == pidS) "[protACast]: VAL(v) from wrong sender"
           readIORef inputReceived >>= \b -> require (not b) "[protACast]: Too many inputs received"
           writeIORef inputReceived True
-
           multicast $ ACast_ECHO v
           ?pass
 
@@ -246,24 +246,37 @@ testACastBenign :: IO String
 testACastBenign = runITMinIO 120 $ execUC testEnvACastIdeal (idealProtocol) (runAsyncF $ fACast) dummyAdversary
 
 
+type Transcript = [Either
+                         (SttCruptA2Z
+                            (SID, MulticastF2P (ACastMsg String))
+                            (Either
+                               (ClockF2A (SID, ACastMsg String))
+                               (SID, MulticastF2A (ACastMsg String))))
+                         (PID, ACastF2P String)]
+
 testEnvACast
-  :: (Show a, MonadEnvironment m) =>
+  :: (MonadEnvironment m) =>
   Environment (ACastF2P String) (ClockP2F (ACastP2F String))
-     (SttCruptA2Z a (Either (ClockF2A (SID,ACastMsg String)) (SID, MulticastF2A (ACastMsg String))))
+     (SttCruptA2Z (SID, MulticastF2P (ACastMsg String)) (Either (ClockF2A (SID,ACastMsg String)) (SID, MulticastF2A (ACastMsg String))))
      (SttCruptZ2A (ClockP2F (SID, ACastMsg String)) (Either ClockA2F (SID, MulticastA2F (ACastMsg String)))) Void
-     (ClockZ2F) String m
+     (ClockZ2F) Transcript m
 testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let extendRight conf = show ("", conf)
   let sid = ("sidTestACast", show ("Alice", ["Alice", "Bob", "Carol", "Dave"], 1::Integer, ""))
   writeChan z2exec $ SttCrupt_SidCrupt sid Map.empty
+
+  transcript <- newIORef []
+  
   fork $ forever $ do
     (pid, m) <- readChan p2z
+    modifyIORef transcript (++ [Right (pid, m)])
     printEnvIdeal $ "[testEnvACast]: pid[" ++ pid ++ "] output " ++ show m
     ?pass
 
   clockChan <- newChan
   fork $ forever $ do
     mb <- readChan a2z
+    modifyIORef transcript (++ [Left mb])
     case mb of
       SttCruptA2Z_F2A (Left (ClockF2A_Pass)) -> do
         printEnvReal $ "Pass"
@@ -286,21 +299,28 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   let checkQueue = do
         writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
         c <- readChan clockChan
-        printEnvReal $ "[testEnvACast]: Events remaining: " ++ show c
+        -- printEnvReal $ "[testEnvACast]: Events remaining: " ++ show c
         return (c > 0)
 
   () <- readChan pump
   whileM_ checkQueue $ do
+    writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
+    c <- readChan clockChan
+    printEnvReal $ "[testEnvACast]: Events remaining: " ++ show c
+    
     {- Two ways to make progress -}
     {- 1. Environment to Functionality - make progress -}
     -- writeChan z2f ClockZ2F_MakeProgress
     {- 2. Environment to Adversary - deliver first message -}
-    writeChan z2a $ SttCruptZ2A_A2F (Left (ClockA2F_Deliver 0))
+    idx <- getNbits 10
+    let i = mod idx c
+    writeChan z2a $ SttCruptZ2A_A2F (Left (ClockA2F_Deliver i))
     readChan pump
 
-  writeChan outp "environment output: 1"
+  -- Output is the transcript
+  writeChan outp =<< readIORef transcript
 
-testACastReal :: IO String
+testACastReal :: IO Transcript
 testACastReal = runITMinIO 120 $ execUC
   testEnvACast 
   (runAsyncP protACast) 
@@ -369,14 +389,19 @@ simACast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
 
   -- Monitor the sandbox for outputs
   chanOK <- newChan
+  partiesYet <- newIORef parties
   
   fork $ forever $ do
     mf <- readChan sbxp2z
     case mf of
       (_pidS, ACastF2P_OK) -> writeChan chanOK ()
-      (pid', ACastF2P_Deliver _) -> do
+      (pid, ACastF2P_Deliver _) -> do
         -- The sandbox produced output. We can deliver the corresponding message in fACast
-        writeChan a2f $ Left $ ClockA2F_Deliver 0
+        p <- readIORef partiesYet
+        let Just idx = elemIndex pid p
+        modifyIORef partiesYet $ delete pid
+        liftIO $ putStrLn $ "delivering: " ++ pid
+        writeChan a2f $ Left $ ClockA2F_Deliver idx
 
   let handleLeak m = do
          printAdv $ "handleLeak simulator"
@@ -439,10 +464,46 @@ simACast (z2a, a2z) (p2a, a2p) (f2a, a2f) = do
   return ()
 
 
-testACastIdeal :: IO String
+testACastIdeal :: IO Transcript
 testACastIdeal = runITMinIO 120 $ execUC
   testEnvACast 
   (idealProtocol) 
   (runAsyncF $ fACast)
   simACast
 
+
+{--
+ What are the options available to the environment?
+ - Can choose to deliver messages in any order
+ - Can choose to inject point-to-point messages to send from malicious parties
+ - Can provide input to sender (if sender is honest)
+
+ These choices could be adaptive and depend on the transcript observed so far,
+ In this example, we'll only generate in a non-adaptive way, without looking at
+ the content.
+ --}
+
+{-- Comparing transcripts
+   Since the protocol and ideal functionalities are all determinsitic, we can
+   only the environment makes random choices, hence for a fixed seed provided to
+   the environment, we can check that these must be exactly the same in both worlds.
+  --}
+
+testCompare :: IO Bool
+testCompare = runITMinIO 120 $ do
+  liftIO $ putStrLn "*** RUNNING REAL WORLD ***"
+  t1R <- runRandRecord $ execUC
+             testEnvACast 
+             (runAsyncP protACast) 
+             (runAsyncF $ bangFAsync fMulticast)
+             dummyAdversary
+  let (t1, bits) = t1R
+  liftIO $ putStrLn ""
+  liftIO $ putStrLn ""  
+  liftIO $ putStrLn "*** RUNNING IDEAL WORLD ***"
+  t2 <- runRandReplay bits $ execUC
+             testEnvACast 
+             (idealProtocol) 
+             (runAsyncF $ fACast)
+             simACast
+  return (t1 == t2)

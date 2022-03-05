@@ -161,7 +161,7 @@ execUC_ z p f a = do
 data SttCrupt_SidCrupt = SttCrupt_SidCrupt SID Crupt deriving Show
 
 data SttCruptZ2A a b = SttCruptZ2A_A2P (PID, a) | SttCruptZ2A_A2F b deriving Show
-data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving Show
+data SttCruptA2Z a b = SttCruptA2Z_P2A (PID, a) | SttCruptA2Z_F2A b deriving (Show, Eq)
 
 
 {- Protocol party wrapper -}

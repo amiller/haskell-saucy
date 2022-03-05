@@ -55,7 +55,7 @@ type Round = Int
 
 {-- Types of messages exchanged with the clock --}
 data ClockA2F = ClockA2F_GetCount | ClockA2F_Deliver Int | ClockA2F_GetLeaks deriving Show
-data ClockF2A l = ClockF2A_Pass | ClockF2A_Count Int | ClockF2A_Leaks [l] deriving Show
+data ClockF2A l = ClockF2A_Pass | ClockF2A_Count Int | ClockF2A_Leaks [l] deriving (Show, Eq)
 data ClockZ2F = ClockZ2F_MakeProgress deriving Show
 data ClockP2F a = ClockP2F_Pass | ClockP2F_Through a deriving Show
 

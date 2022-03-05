@@ -20,8 +20,8 @@ import qualified Data.Map.Strict as Map
 
 forMseq_ xs f = sequence_ $ map f xs
 
-data MulticastF2P a = MulticastF2P_OK | MulticastF2P_Deliver a deriving Show
-data MulticastF2A a = MulticastF2A a deriving Show
+data MulticastF2P a = MulticastF2P_OK | MulticastF2P_Deliver a deriving (Show, Eq)
+data MulticastF2A a = MulticastF2A a deriving (Show, Eq)
 data MulticastA2F a = MulticastA2F_Deliver PID a deriving Show
 
 fMulticast :: MonadFunctionalityAsync m t =>
