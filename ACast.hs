@@ -119,6 +119,14 @@ protACast (z2p, p2z) (f2p, p2f) = do
   decided <- newIORef False
   echoes <- newIORef (Map.empty :: Map String (Map PID ()))
   readys <- newIORef (Map.empty :: Map String (Map PID ()))
+
+  -- Require means print the error then pass
+  let require cond msg = 
+        if not cond then do
+          liftIO $ putStrLn $ msg
+          ?pass
+          readChan =<< newChan -- block without returning
+        else return ()
                    
   -- Prepare channels
   (recvC, multicastC, cOK) <- manyMulticast ?pid parties (f2p, p2f)
@@ -132,7 +140,7 @@ protACast (z2p, p2z) (f2p, p2f) = do
   let sendReadyOnce v = do
         already <- readIORef sentReady
         if not already then do
-          liftIO $ putStrLn $ "[" ++ ?pid ++ "] Sending READY"
+          -- liftIO $ putStrLn $ "[" ++ ?pid ++ "] Sending READY"
           writeIORef sentReady True
           multicast $ ACast_READY v
         else return ()
@@ -146,7 +154,7 @@ protACast (z2p, p2z) (f2p, p2f) = do
          liftIO $ putStrLn $ "Step 1"
          require (?pid == pidS) "[protACast]: only sender provides input"
          multicast (ACast_VAL m)
-         liftIO $ putStrLn $ "[protACast]: multicast done"
+         -- liftIO $ putStrLn $ "[protACast]: multicast done"
          writeChan p2z ACastF2P_OK
 
   let n = length parties
@@ -304,6 +312,14 @@ testEnvACast z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
 
   () <- readChan pump
   whileM_ checkQueue $ do
+
+    b <- ?getBit
+    if b then do
+      -- Action 1: Inject fake messages from corrupt nodes
+      return ()
+    else return()
+    
+    -- Action 2:
     writeChan z2a $ SttCruptZ2A_A2F (Left ClockA2F_GetCount)
     c <- readChan clockChan
     printEnvReal $ "[testEnvACast]: Events remaining: " ++ show c
