@@ -143,7 +143,7 @@ runAbbTestProg mpcProg (z2p,p2z) (f2p,p2f) = do
    let _op opcode = do
          writeChan p2f $ FmpcP2F_Op opcode
          res <- readChan f2p
-         let (FmpcF2P_Op r) = res
+         let (FmpcF2P_Op opcode r) = res
          return r
 
    if ?pid == "InputParty" then do
@@ -272,7 +272,7 @@ data FmpcP2F sh = FmpcP2F_Op (FmpcOp sh)
                 | FmpcP2F_Input Fq
                 | FmpcP2F_MyShare sh deriving (Show, Functor)
 
-data FmpcF2P sh = FmpcF2P_Op (FmpcRes sh)
+data FmpcF2P sh = FmpcF2P_Op (FmpcOp sh) (FmpcRes sh)
                 | FmpcF2P_Log [(FmpcOp sh,FmpcRes sh)]
                 | FmpcF2P_Ok
                 | FmpcF2P_WrongFollow
@@ -341,7 +341,7 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
   -- Commit this operation and output to the log
   let commit op outp = do
         modifyIORef ops $ (++ [(op,outp)])
-        writeChan f2p $ ("InputParty", FmpcF2P_Op outp)
+        writeChan f2p $ ("InputParty", FmpcF2P_Op op outp)
 
   fork $ forever $ do
    (pid,m) <- readChan p2f
@@ -392,7 +392,7 @@ fMPC_ hasMPC hasMult (p2f, f2p) (_,_) (_,_) = do
      let (op',res) = oplist !! c
      if op == op' then do
        modifyIORef counters $ Map.insert pid (c+1)
-       writeChan f2p $ (pid, FmpcF2P_Op res)
+       writeChan f2p $ (pid, FmpcF2P_Op op res)
      else
        writeChan f2p $ (pid, FmpcF2P_WrongFollow)
 
@@ -558,13 +558,13 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
    let _op opcode = do
          writeChan p2f $ FmpcP2F_Op opcode
          res <- readChan f2p
-         let (FmpcF2P_Op r) = res
+         let (FmpcF2P_Op opcode r) = res
          return r
 
    log <- newIORef []
    let commit opcode res = do
        modifyIORef log $ (++ [(opcode,res)])
-       writeChan p2z $ FmpcF2P_Op res
+       writeChan p2z $ FmpcF2P_Op opcode res
 
    fork $ forever $ do
         zp <- readChan z2p
@@ -580,7 +580,7 @@ runMPCnewmul mulProg (z2p,p2z) (f2p,p2f) = do
              -- expect one response
              writeChan p2f $ zp
              mr <- readChan f2p
-             let FmpcF2P_Op r = mr
+             let FmpcF2P_Op op r = mr
              commit op r
 
           FmpcP2F_Log -> do
@@ -618,10 +618,10 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
   fork $ forever $ do
     (pid,m) <- readChan p2z
     -- Store the opaque handles received from honest parties
-    case m of FmpcF2P_Op (FmpcRes_Sh sh) -> writeIORef lastHandle (Just sh)
+    case m of FmpcF2P_Op op (FmpcRes_Sh sh) -> writeIORef lastHandle (Just sh)
               _ -> return ()
     let sanitized = fmap (const ()) m
-    liftIO $ putStrLn $ "Z:[" ++ pid ++ "] sent " ++ show sanitized
+    printEnvIdeal $ "Z:[" ++ pid ++ "] sent " ++ show sanitized
     ?pass
 
   fork $ forever $ do
@@ -630,10 +630,10 @@ envTestMPC z2exec (p2z, z2p) (a2z, z2a) (f2z, z2f) pump outp = do
       SttCruptA2Z_P2A (pid, m) -> do
         -- Store the concrete handles received from corrupt party
         case m of
-          FmpcF2P_Op (FmpcRes_Sh sh) -> writeIORef lastIntHandle (Just sh)
+          FmpcF2P_Op op (FmpcRes_Sh sh) -> writeIORef lastIntHandle (Just sh)
           FmpcF2P_Log log | pid == "Observer" -> do
-            liftIO $ putStrLn $ "Z: [" ++pid++ "] (corrupt) received log: "
-            forM (fromList log) $ liftIO . putStrLn . show
+            printEnvReal $ "[" ++pid++ "] (corrupt) received log: "
+            forM (fromList log) $ printEnvReal . show
 
             -- Check the equation is satisfied
             
@@ -892,7 +892,7 @@ simBeaver (z2a, a2z) (p2a, a2p) (_, _) = do
         let (op',res) = oplist !! c
         if op == op' then do
           modifyIORef counters $ Map.insert pid (c+1)
-          writeChan a2z $ SttCruptA2Z_P2A $ (pid, FmpcF2P_Op res)
+          writeChan a2z $ SttCruptA2Z_P2A $ (pid, FmpcF2P_Op op res)
         else
           writeChan a2z $ SttCruptA2Z_P2A $ (pid, FmpcF2P_WrongFollow)
 

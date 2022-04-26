@@ -315,9 +315,8 @@ test2run = runITMinIO 120 test2
 
 
 
-{- run-time checking of a condition or throw exception -}
+{-- run-time checking of a condition or throw exception -}
 require cond msg = if not cond then error msg else return ()
-
 
 
 {-
@@ -533,6 +532,5 @@ testCe1 = runITMinIO 120 $ counterExampleProgram
 {-
    (II) In the second example, we look at the possibility of conveying
    secret information to the scheduler via choices.
-
 
 --}
